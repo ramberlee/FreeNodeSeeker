@@ -127,17 +127,18 @@ class TestSip008Parser:
 
 class TestDetector:
     def test_detect_proxy_uri(self):
-        fmt = detect_format(SAMPLE_MULTI_URI)
+        fmt, pre = detect_format(SAMPLE_MULTI_URI)
         assert fmt == "proxy_uri"
 
     def test_detect_clash_yaml(self):
         text = "port: 7890\nproxies:\n  - name: x\n    type: ss\n    server: x\n    port: 1\n"
-        fmt = detect_format(text)
+        fmt, pre = detect_format(text)
         assert fmt == "clash_yaml"
+        assert pre is not None  # pre-parsed YAML data should be returned
 
     def test_detect_sip008(self):
         json_str = '[{"server": "1.1.1.1", "server_port": 8388, "method": "aes-256-gcm", "password": "pwd"}]'
-        fmt = detect_format(json_str)
+        fmt, pre = detect_format(json_str)
         assert fmt == "sip008"
 
     def test_parse_auto(self):

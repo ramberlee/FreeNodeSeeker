@@ -25,7 +25,7 @@ class GithubSourceConfig(BaseModel):
 class WebScrapeSourceConfig(BaseModel):
     enabled: bool = True
     urls: list[str] = Field(default_factory=list)
-    request_delay: float = 1.0
+    request_delay: float = 0.3
     proxy: str | None = None
 
 

@@ -19,5 +19,5 @@ class BaseParser(ABC):
         return False
 
     @abstractmethod
-    def parse(self, text: str, source: str = "") -> ParseResult:
+    def parse(self, text: str, source: str = "", pre_parsed: object = None) -> ParseResult:
         ...

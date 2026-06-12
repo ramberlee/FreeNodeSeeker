@@ -40,11 +40,11 @@ class ClashYamlParser(BaseParser):
         except yaml.YAMLError:
             return False
 
-    def parse(self, text: str, source: str = "") -> ParseResult:
+    def parse(self, text: str, source: str = "", pre_parsed: object = None) -> ParseResult:
         result = ParseResult(format_detected="clash_yaml")
 
         try:
-            data = yaml.safe_load(text)
+            data = pre_parsed if pre_parsed is not None else yaml.safe_load(text)
         except yaml.YAMLError as e:
             result.errors.append(f"YAML parse error: {e}")
             return result

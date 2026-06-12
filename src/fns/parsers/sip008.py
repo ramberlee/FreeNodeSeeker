@@ -40,7 +40,7 @@ class Sip008Parser(BaseParser):
             pass
         return False
 
-    def parse(self, text: str, source: str = "") -> ParseResult:
+    def parse(self, text: str, source: str = "", pre_parsed: object = None) -> ParseResult:
         result = ParseResult(format_detected="sip008")
         data = self._load_json(text, result)
         if data is None:

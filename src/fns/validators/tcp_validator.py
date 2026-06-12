@@ -205,7 +205,10 @@ async def _wait_for_port(port: int, timeout: float) -> bool:
 
 
 async def _validate_via_singbox(
-    node: ProxyNode, test_url: str, timeout: float
+    node: ProxyNode,
+    test_url: str,
+    timeout: float,
+    session: aiohttp.ClientSession | None = None,
 ) -> tuple[bool, float | None]:
     """Test a node by starting sing-box and routing a request through it.
 
@@ -218,7 +221,6 @@ async def _validate_via_singbox(
     port = _free_port()
     config = _build_singbox_config(node, port)
 
-    # Write temp config
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False, encoding="utf-8"
     )
@@ -241,13 +243,21 @@ async def _validate_via_singbox(
 
             start = time.monotonic()
             proxy_url = f"http://127.0.0.1:{port}"
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as session:
+
+            if session is not None and not session.closed:
                 async with session.get(test_url, proxy=proxy_url) as resp:
                     if resp.status >= 400:
-                        return False, None  # 502 = sing-box outbound failed
+                        return False, None
                     await resp.read()
+            else:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=timeout)
+                ) as sess:
+                    async with sess.get(test_url, proxy=proxy_url) as resp:
+                        if resp.status >= 400:
+                            return False, None
+                        await resp.read()
+
             elapsed = (time.monotonic() - start) * 1000
             return True, round(elapsed, 1)
         except Exception:
@@ -295,7 +305,32 @@ class TcpValidator:
         self.retries = config.retries
         self.test_url = config.test_url
         self._semaphore = asyncio.Semaphore(config.concurrency)
-        self._singbox_sem = asyncio.Semaphore(max(1, config.concurrency // 10))
+        # sing-box 进程启动是主要开销，提高并发比限制更合理
+        self._singbox_sem = asyncio.Semaphore(max(1, config.concurrency // 2))
+        self._shared_session: aiohttp.ClientSession | None = None
+        self._session_owner: bool = False
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Get or create a shared aiohttp session for the validation batch."""
+        if self._shared_session is None or self._shared_session.closed:
+            connector = aiohttp.TCPConnector(
+                limit=0,          # 不限连接数
+                force_close=True, # 每次用完立即关闭，因为代理端口每次不同
+                enable_cleanup_closed=True,
+            )
+            timeout_obj = aiohttp.ClientTimeout(total=self.timeout)
+            self._shared_session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=timeout_obj,
+            )
+            self._session_owner = True
+        return self._shared_session
+
+    async def _close_session(self) -> None:
+        if self._session_owner and self._shared_session and not self._shared_session.closed:
+            await self._shared_session.close()
+            self._shared_session = None
+            self._session_owner = False
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -303,28 +338,74 @@ class TcpValidator:
         if not nodes:
             return nodes
 
+        # Separate nodes into simple (direct handler) and complex (TCP pre-filter → sing-box)
+        simple_nodes: list[ProxyNode] = []
+        complex_nodes: list[ProxyNode] = []
+
+        for n in nodes:
+            if n.node_type in (ProxyType.HTTP, ProxyType.SOCKS5, ProxyType.SS, ProxyType.TROJAN):
+                simple_nodes.append(n)
+            else:
+                complex_nodes.append(n)
+
+        # Phase 1: TCP pre-filter complex nodes at high concurrency
+        tcp_alive: list[ProxyNode] = []
+        if complex_nodes:
+            tcp_alive = await self._tcp_prefilter_batch(complex_nodes)
+            logger.info(
+                f"TCP pre-filter: {len(tcp_alive)}/{len(complex_nodes)} "
+                f"complex nodes reachable"
+            )
+
+        # Phase 2: Full validation on all candidates
+        all_candidates = simple_nodes + tcp_alive
+        total = len(all_candidates)
+
         logger.info(
-            f"Validating {len(nodes)} nodes via {self.test_url} "
+            f"Full validation: {len(simple_nodes)} simple + {len(tcp_alive)} "
+            f"complex = {total} total "
             f"(concurrency={self.concurrency}, timeout={self.timeout}s)..."
         )
         done = 0
-        total = len(nodes)
-        log_every = max(1, total // 10)  # Log ~10 times
+        log_every = max(1, total // 10) if total else 1
 
         async def _validate_one_count(node: ProxyNode) -> ProxyNode:
             nonlocal done
             result = await self._validate_with_sem(node)
             done += 1
             if done % log_every == 0 or done == total:
-                alive_so_far = sum(1 for n in nodes[:done] if n.is_alive)
+                alive_so_far = sum(1 for n in all_candidates[:done] if n.is_alive)
                 logger.info(f"  Progress: {done}/{total} checked, {alive_so_far} alive so far")
             return result
 
-        tasks = [_validate_one_count(node) for node in nodes]
-        await asyncio.gather(*tasks)
+        try:
+            if all_candidates:
+                tasks = [_validate_one_count(node) for node in all_candidates]
+                await asyncio.gather(*tasks)
+        finally:
+            await self._close_session()
+
         alive = sum(1 for n in nodes if n.is_alive)
         logger.info(f"Validation done: {alive}/{len(nodes)} alive")
         return nodes
+
+    async def _tcp_prefilter_batch(self, nodes: list[ProxyNode]) -> list[ProxyNode]:
+        """Fast TCP port check for all complex nodes at high concurrency.
+
+        Uses a dedicated high-concurrency semaphore since TCP connects are cheap.
+        """
+        tcp_sem = asyncio.Semaphore(min(len(nodes), max(self.concurrency * 3, 100)))
+
+        async def _check_one(node: ProxyNode) -> ProxyNode | None:
+            async with tcp_sem:
+                if await self._quick_tcp_check(node):
+                    return node
+                node.is_alive = False
+                node.latency_ms = None
+                return None
+
+        results = await asyncio.gather(*[_check_one(n) for n in nodes])
+        return [r for r in results if r is not None]
 
     async def validate_one(self, node: ProxyNode) -> ProxyNode:
         return await self._validate_node(node)
@@ -346,12 +427,8 @@ class TcpValidator:
         if handler:
             return await handler(node)
 
-        # VMess, VLESS, Hysteria2, TUIC → TCP pre-filter first
-        if not await self._quick_tcp_check(node):
-            node.is_alive = False
-            node.latency_ms = None
-            return node
-
+        # VMess, VLESS, Hysteria2, TUIC: TCP pre-filter already done in validate_all,
+        # go straight to full protocol validation.
         if _find_singbox():
             return await self._try_singbox(node)
         return await self._try_tcp_fallback(node)
@@ -376,34 +453,32 @@ class TcpValidator:
 
     async def _try_http(self, node: ProxyNode) -> ProxyNode:
         proxy_url = f"http://{node.address}:{node.port}"
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=self.timeout)
-        ) as session:
-            for attempt in range(self.retries + 1):
-                try:
-                    start = time.monotonic()
-                    async with session.get(
-                        self.test_url,
-                        proxy=proxy_url,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout),
-                    ) as resp:
-                        if resp.status >= 400:
-                            return node  # proxy returned error
-                        await resp.read()
-                    elapsed = (time.monotonic() - start) * 1000
-                    node.latency_ms = round(elapsed, 1)
-                    node.is_alive = True
-                    return node
-                except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
-                    logger.debug(
-                        f"HTTP error via {node.address}:{node.port}: {e} "
-                        f"(attempt {attempt + 1})"
-                    )
-                except Exception as e:
-                    logger.debug(
-                        f"Error via {node.address}:{node.port}: {e} "
-                        f"(attempt {attempt + 1})"
-                    )
+        session = await self._get_session()
+        for attempt in range(self.retries + 1):
+            try:
+                start = time.monotonic()
+                async with session.get(
+                    self.test_url,
+                    proxy=proxy_url,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
+                ) as resp:
+                    if resp.status >= 400:
+                        return node
+                    await resp.read()
+                elapsed = (time.monotonic() - start) * 1000
+                node.latency_ms = round(elapsed, 1)
+                node.is_alive = True
+                return node
+            except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
+                logger.debug(
+                    f"HTTP error via {node.address}:{node.port}: {e} "
+                    f"(attempt {attempt + 1})"
+                )
+            except Exception as e:
+                logger.debug(
+                    f"Error via {node.address}:{node.port}: {e} "
+                    f"(attempt {attempt + 1})"
+                )
 
         node.is_alive = False
         node.latency_ms = None
@@ -558,9 +633,10 @@ class TcpValidator:
 
     async def _try_singbox(self, node: ProxyNode) -> ProxyNode:
         async with self._singbox_sem:
+            session = await self._get_session()
             for attempt in range(self.retries + 1):
                 ok, lat = await _validate_via_singbox(
-                    node, self.test_url, self.timeout
+                    node, self.test_url, self.timeout, session=session
                 )
                 if ok:
                     node.is_alive = True

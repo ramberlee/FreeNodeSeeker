@@ -45,23 +45,35 @@ class GithubCollector(BaseCollector):
         results: list[RawContent] = []
         n_queries = len(self.config.search_queries)
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
+
         async with aiohttp.ClientSession(headers=headers, timeout=timeout) as sess:
-            for i, query in enumerate(self.config.search_queries):
-                logger.info(f"[{i+1}/{n_queries}] Searching GitHub: {query}")
-                try:
-                    items = await self._search(sess, query)
-                    logger.info(f"  -> {len(items)} matching files found")
-                    if items:
-                        contents = await self._fetch_contents(sess, items)
-                        logger.info(f"  -> {len(contents)} files downloaded")
-                        results.extend(contents)
-                except asyncio.TimeoutError:
-                    logger.warning(f"GitHub search timeout for: {query}")
-                except aiohttp.ClientError as e:
-                    logger.warning(f"GitHub API error: {e}")
-                except Exception as e:
-                    logger.warning(f"GitHub error for '{query}': {e}")
-                await asyncio.sleep(1)  # Rate limit respect
+            # Concurrent search with semaphore to respect rate limits
+            # GitHub: 10 req/min unauthenticated, 30 req/min authenticated
+            search_sem = asyncio.Semaphore(3 if self.config.token else 2)
+
+            async def _search_one(idx: int, query: str) -> list[RawContent]:
+                async with search_sem:
+                    logger.info(f"[{idx+1}/{n_queries}] Searching GitHub: {query}")
+                    try:
+                        items = await self._search(sess, query)
+                        logger.info(f"  -> {len(items)} matching files found")
+                        if items:
+                            contents = await self._fetch_contents(sess, items)
+                            logger.info(f"  -> {len(contents)} files downloaded")
+                            return contents
+                    except asyncio.TimeoutError:
+                        logger.warning(f"GitHub search timeout for: {query}")
+                    except aiohttp.ClientError as e:
+                        logger.warning(f"GitHub API error: {e}")
+                    except Exception as e:
+                        logger.warning(f"GitHub error for '{query}': {e}")
+                    return []
+
+            tasks = [_search_one(i, q) for i, q in enumerate(self.config.search_queries)]
+            batch_results = await asyncio.gather(*tasks)
+            for r in batch_results:
+                results.extend(r)
+
         return results
 
     async def _search(self, sess: aiohttp.ClientSession, query: str) -> list[dict]:

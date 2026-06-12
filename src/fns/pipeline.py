@@ -5,8 +5,10 @@ Supports incremental update: resume existing alive nodes, only collect if short.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 
 from fns.collectors.api_collector import ApiCollector
@@ -17,9 +19,41 @@ from fns.config import FnsConfig
 from fns.merger import merge_sources
 from fns.models import PipelineResult, ProxyNode, ProxyType
 from fns.parsers.detector import parse_auto
+from fns.parsers.base import ParseResult
 from fns.validators.tcp_validator import TcpValidator
 
 logger = logging.getLogger("fns")
+
+# Validation cache TTL: skip re-validating nodes checked within this window (seconds)
+_VALIDATION_CACHE_TTL = 1800  # 30 minutes
+_VALIDATION_CACHE_FILE = "fns.cache.json"
+
+
+def _load_validation_cache(output_dir: Path) -> dict[tuple, tuple[bool, float, float]]:
+    """Load validation cache: {(address, port, node_type): (is_alive, latency_ms, timestamp)}."""
+    cache_path = output_dir / _VALIDATION_CACHE_FILE
+    if not cache_path.exists():
+        return {}
+    try:
+        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    cache: dict[tuple, tuple[bool, float, float]] = {}
+    for key_str, val in raw.items():
+        parts = key_str.split("|", 2)
+        if len(parts) == 3:
+            cache[(parts[0], int(parts[1]), parts[2])] = (val[0], val[1], val[2])
+    return cache
+
+
+def _save_validation_cache(
+    output_dir: Path, cache: dict[tuple, tuple[bool, float, float]]
+) -> None:
+    cache_path = output_dir / _VALIDATION_CACHE_FILE
+    raw: dict[str, list] = {}
+    for (addr, port, ptype), (alive, lat, ts) in cache.items():
+        raw[f"{addr}|{port}|{ptype}"] = [alive, lat, ts]
+    cache_path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
 
 
 def load_existing_nodes(output_dir: Path) -> list[ProxyNode]:
@@ -102,21 +136,53 @@ async def run_pipeline(
     effective_max = max_nodes if max_nodes is not None else cfg.max_alive_nodes
 
     # ── 0. Resume existing nodes (if max_nodes mode) ────────────────────────
+    # 同时更新验证缓存
 
     existing_alive: list[ProxyNode] = []
+    validation_cache = _load_validation_cache(output_dir) if not skip_validation else {}
+
     if effective_max > 0 and not skip_validation:
         existing = load_existing_nodes(output_dir)
         if existing:
-            logger.info(f"Validating {len(existing)} existing nodes...")
-            validator = TcpValidator(cfg.validator)
-            await validator.validate_all(existing)
-            existing_alive = [n for n in existing if n.is_alive]
+            now = time.time()
+            fresh_nodes: list[ProxyNode] = []   # 需要重新验证
+            cached_alive: list[ProxyNode] = []  # 缓存中仍存活且未过期
+
+            for n in existing:
+                cache_entry = validation_cache.get((n.address, n.port, n.node_type.value))
+                if cache_entry and (now - cache_entry[2]) < _VALIDATION_CACHE_TTL:
+                    # 使用缓存结果
+                    n.is_alive = cache_entry[0]
+                    n.latency_ms = cache_entry[1]
+                    if n.is_alive:
+                        cached_alive.append(n)
+                else:
+                    fresh_nodes.append(n)
+
+            if cached_alive:
+                logger.info(
+                    f"Reused cached results: {len(cached_alive)} alive, "
+                    f"need to validate {len(fresh_nodes)} fresh"
+                )
+
+            if fresh_nodes:
+                logger.info(f"Validating {len(fresh_nodes)} existing nodes...")
+                validator = TcpValidator(cfg.validator)
+                await validator.validate_all(fresh_nodes)
+                # 更新缓存
+                for n in fresh_nodes:
+                    validation_cache[(n.address, n.port, n.node_type.value)] = (
+                        n.is_alive, n.latency_ms, now,
+                    )
+
+            existing_alive = cached_alive + [n for n in fresh_nodes if n.is_alive]
             logger.info(f"Existing nodes: {len(existing_alive)}/{len(existing)} alive")
 
             if len(existing_alive) >= effective_max:
                 # Already enough — just write and return
                 logger.info(f"Already have {len(existing_alive)} alive nodes (target={effective_max}), skipping collection")
                 existing_alive = existing_alive[:effective_max]
+                _save_validation_cache(output_dir, validation_cache)
                 _write_outputs(existing_alive, cfg, output_dir, errors)
                 return PipelineResult(
                     nodes=existing_alive,
@@ -132,27 +198,37 @@ async def run_pipeline(
         logger.warning("No collectors enabled")
         # Still output existing alive nodes
         if existing_alive:
+            _save_validation_cache(output_dir, validation_cache)
             _write_outputs(existing_alive, cfg, output_dir, errors)
         return PipelineResult(nodes=existing_alive, sources_used=0, parse_errors=errors)
 
     shortage = effective_max - len(existing_alive) if effective_max > 0 else 0
 
-    all_raw: list[RawContent] = []
-    for collector in collectors:
-        if effective_max > 0 and shortage <= 0:
-            break  # Got enough, stop
+    # Run all collectors concurrently
+    async def _collect_one(collector):
         try:
             raw = await collector.collect()
             logger.info(f"Collector '{collector.name}' got {len(raw)} items")
-            all_raw.extend(raw)
+            return raw, collector.name, None
         except Exception as e:
             msg = f"Collector '{collector.name}' failed: {e}"
             logger.error(msg)
-            errors.append(msg)
+            return [], collector.name, msg
+
+    collector_results = await asyncio.gather(
+        *[_collect_one(c) for c in collectors], return_exceptions=False
+    )
+
+    all_raw: list[RawContent] = []
+    for raw_list, cname, err_msg in collector_results:
+        if err_msg:
+            errors.append(err_msg)
+        all_raw.extend(raw_list)
 
     if not all_raw:
         logger.warning("No content collected")
         if existing_alive:
+            _save_validation_cache(output_dir, validation_cache)
             _write_outputs(existing_alive, cfg, output_dir, errors)
         return PipelineResult(
             nodes=existing_alive,
@@ -163,18 +239,21 @@ async def run_pipeline(
 
     # ── 2. Parse ───────────────────────────────────────────────────────────
 
-    source_nodes: dict[str, list] = {}
-    for raw in all_raw:
+    async def _parse_one(raw: RawContent):
+        """Parse a single raw content item in a thread (CPU-bound)."""
         try:
-            result = parse_auto(raw.text, raw.source_url)
-            if result.nodes:
-                if raw.collector_name not in source_nodes:
-                    source_nodes[raw.collector_name] = []
-                source_nodes[raw.collector_name].extend(result.nodes)
-            if result.errors:
-                errors.extend(result.errors)
+            return await asyncio.to_thread(parse_auto, raw.text, raw.source_url), raw.collector_name
         except Exception as e:
-            errors.append(f"Parse error for {raw.source_url}: {e}")
+            return ParseResult(errors=[f"Parse error for {raw.source_url}: {e}"]), raw.collector_name
+
+    source_nodes: dict[str, list] = {}
+    parse_tasks = [_parse_one(raw) for raw in all_raw]
+    parse_results = await asyncio.gather(*parse_tasks)
+    for result, collector_name in parse_results:
+        if result.nodes:
+            source_nodes.setdefault(collector_name, []).extend(result.nodes)
+        if result.errors:
+            errors.extend(result.errors)
 
     total_parsed = sum(len(v) for v in source_nodes.values())
     logger.info(f"Parsed {total_parsed} nodes from {len(source_nodes)} sources")
@@ -221,6 +300,14 @@ async def run_pipeline(
 
     alive_new = sum(1 for n in new_nodes if n.is_alive)
     logger.info(f"New nodes validation: {alive_new}/{len(new_nodes)} alive")
+
+    # 更新验证缓存（新节点）
+    now = time.time()
+    for n in new_nodes:
+        validation_cache[(n.address, n.port, n.node_type.value)] = (
+            n.is_alive, n.latency_ms, now,
+        )
+    _save_validation_cache(output_dir, validation_cache)
 
     # ── 5. Merge existing + new ────────────────────────────────────────────
 

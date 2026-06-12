@@ -40,7 +40,7 @@ class Base64SubParser(BaseParser):
         except Exception:
             return False
 
-    def parse(self, text: str, source: str = "") -> ParseResult:
+    def parse(self, text: str, source: str = "", pre_parsed: object = None) -> ParseResult:
         result = ParseResult(format_detected="base64_sub")
         uri_parser = ProxyUriParser()
 

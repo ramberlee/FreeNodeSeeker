@@ -55,7 +55,7 @@ class ProxyUriParser(BaseParser):
     def can_parse(text: str) -> bool:
         return any(PROTO_RE.match(line.strip()) for line in text.strip().splitlines() if line.strip())
 
-    def parse(self, text: str, source: str = "") -> ParseResult:
+    def parse(self, text: str, source: str = "", pre_parsed: object = None) -> ParseResult:
         result = ParseResult(format_detected="proxy_uri")
         for line in text.strip().splitlines():
             line = line.strip()
