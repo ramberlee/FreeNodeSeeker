@@ -1,0 +1,7 @@
+# VMess sample URIs
+vmess://ewogICJ2IjogIjIiLAogICJwcyI6ICJUZXN0LVZNZXNzIiwKICAiYWRkIjogIjEuMi4zLjQiLAogICJwb3J0IjogNDQzLAogICJpZCI6ICJiODMxMzgxZC02MzI0LTRkNTMtYWQ0Zi04Y2RhNDhiMzA4MTEiLAogICJhaWQiOiAiMCIsCiAgInNjeSI6ICJhdXRvIiwKICAibmV0IjogIndzIiwKICAidHlwZSI6ICJub25lIiwKICAiaG9zdCI6ICJleGFtcGxlLmNvbSIsCiAgInBhdGgiOiAiL3BhdGgiLAogICJ0bHMiOiAidGxzIiwKICAic25pIjogImV4YW1wbGUuY29tIiwKICAiYWxwbiI6ICIiLAogICJmcCI6ICIiCn0=
+ss://YWVzLTI1Ni1nY206dGVzdDEyMw==@5.6.7.8:8388#Test-SS
+trojan://trojan-password@trojan.example.com:443?security=tls&type=tcp&sni=trojan.example.com#Test-Trojan
+vless://b831381d-6324-4d53-ad4f-8cda48b30811@vless.example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=vless.example.com&pbk=qwerty123&sid=abcd#Test-VLESS
+hysteria2://hy2-pass@hy2.example.com:443?sni=hy2.example.com&obfs=salamander&obfs-password=obfs-pass&up=50&down=200#Test-Hysteria2
+tuic://b831381d-6324-4d53-ad4f-8cda48b30811:tuic-pass@tuic.example.com:443?congestion_control=bbr&udp_relay_mode=native&sni=tuic.example.com#Test-TUIC
