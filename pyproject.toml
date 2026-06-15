@@ -1,7 +1,7 @@
 [project]
 name = "freenodeseeker"
 version = "0.1.0"
-description = "Auto-collect free V2Ray/Clash subscription nodes"
+description = "Auto-collect free V2Ray/Clash subscription nodes with built-in HTTP server"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

@@ -155,6 +155,7 @@ collect → parse → validate → merge → output
 ```powershell
 fns run                           # 采集所有可用节点，不限数量
 fns run -n 10                     # 采集 10 个存活节点
+fns run -n 10 --serve             # 采集后启动 HTTP 服务器（订阅 URL）
 fns run -n 20 -o ./my_output      # 指定输出目录
 fns run --skip-validation         # 跳过验证（全部标记为存活）
 fns run --formats clash,json      # 指定输出格式
@@ -167,12 +168,36 @@ fns run -c my_config.yaml         # 使用自定义配置
 2. 存活节点足够 → 直接输出，跳过采集
 3. 存活节点不足 → 从源采集新节点补足差额
 
-### fns daemon — 后台定时采集
+### fns daemon — 后台定时采集 + HTTP 服务器
 
 ```powershell
-fns daemon                  # 每 6 小时运行一次（按配置）
-fns daemon -i 2             # 每 2 小时运行一次
+fns daemon                  # 启动 HTTP 服务器 + 每 6 小时采集一次
+fns daemon -i 2             # 每 2 小时采集一次
+fns daemon --no-serve       # 仅定时采集，不启动 HTTP 服务器
 ```
+
+daemon 模式下，HTTP 服务器与采集循环在同一个进程中运行：
+- 首次启动立即执行一次采集
+- 之后按 `scheduler.interval_hours` 定时采集
+- HTTP 服务器持续运行，提供最新的节点数据
+- 订阅 URL：`http://你的IP:5000/fns.txt`
+
+### fns serve — 启动 HTTP 服务器（仅服务模式）
+
+```powershell
+fns run -n 10 --serve       # 采集并启动服务器
+# 或者直接用 daemon 模式（自动启动服务器）
+fns daemon
+```
+
+HTTP 服务器提供以下端点：
+
+| 路由 | 说明 |
+|------|------|
+| `GET /` | 状态页面 |
+| `GET /fns.txt` | Base64 订阅（通用） |
+| `GET /fns.yaml` | Clash Meta YAML 配置 |
+| `GET /fns.json` | JSON 节点元数据 |
 
 ### fns check — 单节点检查
 

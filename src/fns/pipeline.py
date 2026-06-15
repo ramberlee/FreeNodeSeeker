@@ -342,19 +342,19 @@ def _write_outputs(
     for fmt in cfg.output.formats:
         try:
             if fmt == "clash":
-                from fns.output.clash import format_clash
+                from fns.formatters.clash import format_clash
                 content = format_clash(nodes, cfg.output.clash)
                 (output_dir / "fns.yaml").write_text(content, encoding="utf-8")
                 logger.info(f"Wrote clash config to {output_dir / 'fns.yaml'}")
 
             elif fmt == "base64":
-                from fns.output.base64_sub import format_base64_sub
+                from fns.formatters.base64_sub import format_base64_sub
                 content = format_base64_sub(nodes)
                 (output_dir / "fns.txt").write_text(content, encoding="utf-8")
                 logger.info(f"Wrote base64 subscription to {output_dir / 'fns.txt'}")
 
             elif fmt == "json":
-                from fns.output.json_output import format_json
+                from fns.formatters.json_output import format_json
                 content = format_json(nodes)
                 (output_dir / "fns.json").write_text(content, encoding="utf-8")
                 logger.info(f"Wrote JSON to {output_dir / 'fns.json'}")

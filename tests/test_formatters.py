@@ -5,9 +5,9 @@ import json
 import yaml
 
 from fns.config import ClashOutputConfig
-from fns.output.base64_sub import format_base64_sub
-from fns.output.clash import format_clash
-from fns.output.json_output import format_json
+from fns.formatters.base64_sub import format_base64_sub
+from fns.formatters.clash import format_clash
+from fns.formatters.json_output import format_json
 from fns.utils.crypto import safe_b64decode
 
 

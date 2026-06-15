@@ -78,6 +78,12 @@ class SchedulerConfig(BaseModel):
 
 # --- Logging ---
 
+class ServerConfig(BaseModel):
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 5000
+
+
 class LoggingConfig(BaseModel):
     level: str = "INFO"
     file: str | None = None
@@ -90,6 +96,7 @@ class FnsConfig(BaseModel):
     validator: ValidatorConfig = Field(default_factory=ValidatorConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     max_alive_nodes: int = 0  # 0 = no limit
 

@@ -60,11 +60,16 @@ def run(
     skip_validation: bool = typer.Option(False, "--skip-validation", help="Skip connectivity test"),
     max_nodes: int | None = typer.Option(None, "--max-nodes", "-n", help="Alive nodes to output (default from config, 0=no limit)"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    serve: bool = typer.Option(False, "--serve", "-s", help="Start HTTP server after pipeline"),
+    no_serve: bool = typer.Option(False, "--no-serve", help="Disable HTTP server (override config)"),
 ) -> None:
     """Full pipeline: collect -> parse -> validate -> merge -> output.
 
     With --max-nodes, existing output nodes are re-validated first.
     Only collects new nodes if not enough alive ones remain.
+
+    With --serve, starts the built-in HTTP server after pipeline completes
+    to share output files over HTTP (useful as subscription URL).
     """
     cfg = _resolve_config(None)
     if verbose:
@@ -94,17 +99,56 @@ def run(
     ))
     _print_result(result)
 
+    # ── Serve ────────────────────────────────────────────────────
+    start_server = serve or (cfg.server.enabled and not no_serve)
+    if start_server:
+        _start_http_server(cfg)
+
+
+def _start_http_server(cfg: FnsConfig) -> None:
+    """Start the built-in HTTP server and block until Ctrl+C."""
+    from fns.server import run_server
+
+    output_dir = Path(cfg.output.dir)
+    console.print(f"[bold]Starting HTTP server on {cfg.server.host}:{cfg.server.port}...[/]")
+
+    async def _serve():
+        runner = await run_server(cfg.server, output_dir)
+        console.print(f"[green]HTTP server running at http://{cfg.server.host}:{cfg.server.port}/[/]")
+        console.print("[dim]Press Ctrl+C to stop[/]")
+        try:
+            await asyncio.Event().wait()  # sleep forever
+        finally:
+            await runner.cleanup()
+            console.print("[yellow]HTTP server stopped[/]")
+
+    try:
+        asyncio.run(_serve())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Shutting down...[/]")
+
 
 @app.command()
 def daemon(
     interval: Optional[int] = typer.Option(None, "--interval", "-i", help="Hours between runs"),
+    no_serve: bool = typer.Option(False, "--no-serve", help="Disable HTTP server"),
 ) -> None:
-    """Start periodic collection daemon."""
+    """Start periodic collection daemon with built-in HTTP server.
+
+    The HTTP server runs alongside the collection loop, serving the
+    latest output files over HTTP for use as subscription URLs.
+    """
     cfg = _resolve_config(None)
     if interval:
         cfg.scheduler.interval_hours = interval
+    if no_serve:
+        cfg.server.enabled = False
 
     console.print(f"[bold]Starting daemon — every {cfg.scheduler.interval_hours}h[/]")
+    if cfg.server.enabled:
+        console.print(f"[bold]HTTP server on {cfg.server.host}:{cfg.server.port}[/]")
+    else:
+        console.print("[dim]HTTP server disabled[/]")
     from fns.scheduler import start_daemon
 
     start_daemon(cfg)
