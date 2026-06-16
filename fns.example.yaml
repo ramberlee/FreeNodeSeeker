@@ -1,0 +1,70 @@
+# FreeNodeSeeker Example Configuration
+# Copy this file to fns.yaml and customize.
+
+# --- Sources ---
+sources:
+  github:
+    enabled: true
+    search_queries:
+      - free v2ray subscription
+      - v2ray config
+      - clash node free
+      - vless free
+      # - v2ray节点
+    max_results: 30
+    # GitHub now REQUIRES authentication for code search.
+    # Create a classic token (no scopes needed) at https://github.com/settings/tokens
+    token: null  # "ghp_xxxxxxxxxxxx"
+
+  web_scrape:
+    enabled: true
+    urls: []
+    request_delay: 0.3
+    # proxy: "http://127.0.0.1:7890"
+    proxy: null
+
+  api:
+    enabled: true
+    urls: []
+    # urls:
+    #   - https://static.v2rayshare.net/2026/05/20260511.txt
+    #   - https://raw.githubusercontent.com/ssrsub/ssr/master/v2ray
+
+# --- Validator ---
+validator:
+  concurrency: 50
+  timeout: 5.0
+  retries: 1
+  test_url: "http://www.google.com/"
+
+# --- Output ---
+output:
+  formats:
+    - clash
+    - base64
+    # - json
+  clash:
+    port: 7890
+    socks_port: 7891
+    allow_lan: false
+    mode: Rule
+    log_level: info
+  dir: ./output
+
+# Target number of alive nodes in output. 0 = no limit.
+max_alive_nodes: 0
+
+# --- Scheduler ---
+scheduler:
+  interval_hours: 6
+
+# --- Built-in HTTP Server (serve command) ---
+server:
+  enabled: true
+  host: "0.0.0.0"
+  port: 5000
+
+# --- Logging ---
+logging:
+  level: INFO
+  file: null  # "./logs/fns.log"

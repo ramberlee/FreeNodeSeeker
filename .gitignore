@@ -14,7 +14,7 @@ htmlcov/
 output/
 logs/
 *.yaml
-!config.example.yaml
+!fns.example.yaml
 .env
 .idea/
 .vscode/
