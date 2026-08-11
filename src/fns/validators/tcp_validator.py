@@ -7,7 +7,6 @@ import logging
 import os
 import shutil
 import socket
-import subprocess
 import tempfile
 import time
 from urllib.parse import urlparse
@@ -50,7 +49,10 @@ def _find_singbox() -> str | None:
             logger.info(f"Found sing-box at {candidate}")
             return candidate
 
-    logger.warning("sing-box not found — VMess/VLESS/Hysteria2/TUIC will use TCP fallback (port check only, NOT real proxy validation!)")
+    logger.warning(
+        "sing-box not found — VMess/VLESS/Hysteria2/TUIC will be "
+        "marked dead (no real proxy validation)"
+    )
     _SINGBOX_PATH = ""
     return None
 
@@ -68,10 +70,15 @@ def _free_port() -> int:
 def _parse_host_port(url: str) -> tuple[str, int]:
     """Extract hostname and port from a URL."""
     parsed = urlparse(url)
-    return parsed.hostname or "www.google.com", parsed.port or (443 if parsed.scheme == "https" else 80)
+    return (
+        parsed.hostname or "www.google.com",
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+    )
 
 
-_SUCCESS_CODES = {b"200", b"301", b"302", b"303", b"307", b"308"}
+def _is_success_status(status: int) -> bool:
+    """Return True only for 2xx HTTP status codes."""
+    return 200 <= status < 300
 
 
 async def _send_http_get(
@@ -107,7 +114,11 @@ async def _send_http_get(
     parts = data[:32].split(b" ")
     if len(parts) < 2:
         return False
-    return parts[1] in _SUCCESS_CODES
+    try:
+        status = int(parts[1])
+    except ValueError:
+        return False
+    return _is_success_status(status)
 
 
 # ── sing-box subprocess validator ─────────────────────────────────────────────
@@ -115,7 +126,11 @@ async def _send_http_get(
 
 def _build_singbox_config(node: ProxyNode, listen_port: int) -> dict:
     """Generate a minimal sing-box config that routes through *node*."""
-    outbound: dict = {"type": node.node_type.value, "server": node.address, "server_port": node.port}
+    outbound: dict = {
+        "type": node.node_type.value,
+        "server": node.address,
+        "server_port": node.port,
+    }
 
     if node.node_type == ProxyType.VMESS:
         outbound["uuid"] = node.uuid or ""
@@ -245,16 +260,20 @@ async def _validate_via_singbox(
             proxy_url = f"http://127.0.0.1:{port}"
 
             if session is not None and not session.closed:
-                async with session.get(test_url, proxy=proxy_url) as resp:
-                    if resp.status >= 400:
+                async with session.get(
+                    test_url, proxy=proxy_url, allow_redirects=False
+                ) as resp:
+                    if not _is_success_status(resp.status):
                         return False, None
                     await resp.read()
             else:
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=timeout)
                 ) as sess:
-                    async with sess.get(test_url, proxy=proxy_url) as resp:
-                        if resp.status >= 400:
+                    async with sess.get(
+                        test_url, proxy=proxy_url, allow_redirects=False
+                    ) as resp:
+                        if not _is_success_status(resp.status):
                             return False, None
                         await resp.read()
 
@@ -296,7 +315,7 @@ class TcpValidator:
       SOCKS5  → aiohttp-socks ProxyConnector
       SS      → pproxy Connection
       Trojan  → pproxy Connection (pure Python), sing-box (subprocess)
-      VMess/VLESS/Hysteria2/TUIC → sing-box subprocess (TCP fallback if unavailable)
+      VMess/VLESS/Hysteria2/TUIC → sing-box subprocess (no TCP fallback)
     """
 
     def __init__(self, config: ValidatorConfig):
@@ -348,22 +367,23 @@ class TcpValidator:
             else:
                 complex_nodes.append(n)
 
-        # Phase 1: TCP pre-filter complex nodes at high concurrency
-        tcp_alive: list[ProxyNode] = []
-        if complex_nodes:
-            tcp_alive = await self._tcp_prefilter_batch(complex_nodes)
-            logger.info(
-                f"TCP pre-filter: {len(tcp_alive)}/{len(complex_nodes)} "
-                f"complex nodes reachable"
-            )
+        # Phase 1: TCP pre-filter every node at high concurrency. This is much
+        # cheaper than a full protocol handshake and skips dead endpoints quickly.
+        prefilter_nodes = simple_nodes + complex_nodes
+        tcp_alive = (
+            await self._tcp_prefilter_batch(prefilter_nodes) if prefilter_nodes else []
+        )
+        logger.info(
+            f"TCP pre-filter: {len(tcp_alive)}/{len(nodes)} nodes reachable"
+        )
 
-        # Phase 2: Full validation on all candidates
-        all_candidates = simple_nodes + tcp_alive
+        # Phase 2: Full validation on reachable candidates
+        all_candidates = tcp_alive
         total = len(all_candidates)
 
         logger.info(
-            f"Full validation: {len(simple_nodes)} simple + {len(tcp_alive)} "
-            f"complex = {total} total "
+            f"Full validation: {len(simple_nodes)} simple + {len(complex_nodes)} "
+            f"complex, {total} reachable "
             f"(concurrency={self.concurrency}, timeout={self.timeout}s)..."
         )
         done = 0
@@ -431,7 +451,13 @@ class TcpValidator:
         # go straight to full protocol validation.
         if _find_singbox():
             return await self._try_singbox(node)
-        return await self._try_tcp_fallback(node)
+        logger.warning(
+            f"No sing-box available; marking {node.node_type.value}://"
+            f"{node.address}:{node.port} dead instead of using a TCP-only check"
+        )
+        node.is_alive = False
+        node.latency_ms = None
+        return node
 
     async def _quick_tcp_check(self, node: ProxyNode) -> bool:
         """Fast TCP port check to filter out dead nodes before expensive validation."""
@@ -460,9 +486,10 @@ class TcpValidator:
                 async with session.get(
                     self.test_url,
                     proxy=proxy_url,
+                    allow_redirects=False,
                     timeout=aiohttp.ClientTimeout(total=self.timeout),
                 ) as resp:
-                    if resp.status >= 400:
+                    if not _is_success_status(resp.status):
                         return node
                     await resp.read()
                 elapsed = (time.monotonic() - start) * 1000
@@ -487,7 +514,8 @@ class TcpValidator:
     # ── SOCKS5 ──────────────────────────────────────────────────────────
 
     async def _try_socks5(self, node: ProxyNode) -> ProxyNode:
-        from aiohttp_socks import ProxyConnector, ProxyType as SocksProxyType
+        from aiohttp_socks import ProxyConnector
+        from aiohttp_socks import ProxyType as SocksProxyType
 
         username = node.uuid or None
         password = node.password or None
@@ -508,9 +536,10 @@ class TcpValidator:
                     start = time.monotonic()
                     async with session.get(
                         self.test_url,
+                        allow_redirects=False,
                         timeout=aiohttp.ClientTimeout(total=self.timeout),
                     ) as resp:
-                        if resp.status >= 400:
+                        if not _is_success_status(resp.status):
                             return node  # proxy returned error
                         await resp.read()
                     elapsed = (time.monotonic() - start) * 1000
@@ -667,7 +696,8 @@ class TcpValidator:
                 node.is_alive = True
                 if attempt == 0:
                     logger.warning(
-                        f"TCP-only validation for {node.node_type.value}://{node.address}:{node.port} "
+                        f"TCP-only validation for {node.node_type.value}://"
+                        f"{node.address}:{node.port} "
                         f"— NOT a real proxy test! Install sing-box for accurate validation."
                     )
                 writer.close()

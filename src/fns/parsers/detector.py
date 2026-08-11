@@ -33,16 +33,16 @@ def detect_format(text: str) -> tuple[str, object]:
         return "proxy_uri", None
 
     # 2. Clash YAML — parse once, reuse result
+    decoded_b64 = Base64SubParser.try_decode(clean)
+    if decoded_b64 is not None and Base64SubParser.is_subscription_text(decoded_b64):
+        return "base64_sub", decoded_b64
+
     try:
         data = yaml.safe_load(clean)
         if isinstance(data, dict) and ("proxies" in data or "port" in data):
             return "clash_yaml", data
     except yaml.YAMLError:
         pass
-
-    # 3. Base64 subscription
-    if Base64SubParser.can_parse(clean):
-        return "base64_sub", None
 
     # 4. SIP008
     if Sip008Parser.can_parse(clean):

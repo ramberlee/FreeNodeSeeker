@@ -42,7 +42,6 @@ class GithubCollector(BaseCollector):
         if self.config.token:
             headers["Authorization"] = f"token {self.config.token}"
 
-        results: list[RawContent] = []
         n_queries = len(self.config.search_queries)
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
 
@@ -50,17 +49,25 @@ class GithubCollector(BaseCollector):
             # Concurrent search with semaphore to respect rate limits
             # GitHub: 10 req/min unauthenticated, 30 req/min authenticated
             search_sem = asyncio.Semaphore(3 if self.config.token else 2)
+            seen_items: set[str] = set()
 
-            async def _search_one(idx: int, query: str) -> list[RawContent]:
+            async def _search_one(idx: int, query: str) -> list[dict]:
                 async with search_sem:
                     logger.info(f"[{idx+1}/{n_queries}] Searching GitHub: {query}")
                     try:
                         items = await self._search(sess, query)
                         logger.info(f"  -> {len(items)} matching files found")
-                        if items:
-                            contents = await self._fetch_contents(sess, items)
-                            logger.info(f"  -> {len(contents)} files downloaded")
-                            return contents
+                        # The same README often matches multiple queries; download it once.
+                        unique_items = []
+                        for item in items:
+                            key = item.get("url") or item.get("html_url")
+                            if key:
+                                key = str(key)
+                                if key in seen_items:
+                                    continue
+                                seen_items.add(key)
+                            unique_items.append(item)
+                        return unique_items
                     except asyncio.TimeoutError:
                         logger.warning(f"GitHub search timeout for: {query}")
                     except aiohttp.ClientError as e:
@@ -71,8 +78,12 @@ class GithubCollector(BaseCollector):
 
             tasks = [_search_one(i, q) for i, q in enumerate(self.config.search_queries)]
             batch_results = await asyncio.gather(*tasks)
-            for r in batch_results:
-                results.extend(r)
+            unique_items = [item for items in batch_results for item in items]
+            logger.info(f"GitHub: {len(unique_items)} unique files to download")
+
+            results: list[RawContent] = []
+            if unique_items:
+                results = await self._fetch_contents(sess, unique_items)
 
         return results
 
@@ -109,10 +120,16 @@ class GithubCollector(BaseCollector):
         return items
 
     async def _fetch_contents(
-        self, sess: aiohttp.ClientSession, items: list[dict]
+        self,
+        sess: aiohttp.ClientSession,
+        items: list[dict],
+        seen_urls: set[str] | None = None,
     ) -> list[RawContent]:
         results: list[RawContent] = []
         sem = asyncio.Semaphore(5)  # Limit concurrent README downloads
+        link_sem = asyncio.Semaphore(20)
+        if seen_urls is None:
+            seen_urls = set()
 
         async def process_readme(item: dict):
             async with sem:
@@ -141,11 +158,19 @@ class GithubCollector(BaseCollector):
                     links.add(link)
 
             if links:
-                link_tasks = [
-                    fetch_linked_content(sess, url, collector_name=self.name)
-                    for url in links
-                ]
-                fetched = await asyncio.gather(*link_tasks, return_exceptions=True)
+                async def _fetch_one_link(url: str) -> RawContent | None:
+                    async with link_sem:
+                        if url in seen_urls:
+                            return None
+                        seen_urls.add(url)
+                        try:
+                            return await fetch_linked_content(
+                                sess, url, collector_name=self.name
+                            )
+                        except Exception:
+                            return None
+
+                fetched = await asyncio.gather(*[_fetch_one_link(url) for url in links])
                 for result in fetched:
                     if isinstance(result, RawContent):
                         local_results.append(result)

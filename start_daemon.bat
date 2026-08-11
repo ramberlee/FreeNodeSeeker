@@ -9,7 +9,7 @@ set INTERVAL=%~1
 set SCRIPT_DIR=%~dp0
 
 echo Starting v2rayN...
-start "" "C:\Users\user\Documents\v2rayN-windows-64-desktop\v2rayN-windows-64\v2rayN.exe"
+start "" "C:\Users\Administrator\Documents\v2rayN-windows-64\v2rayN.exe"
 
 echo Waiting 5 seconds for v2rayN to initialize...
 ping 127.0.0.1 -n 6 >nul

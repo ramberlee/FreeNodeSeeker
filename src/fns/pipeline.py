@@ -18,8 +18,8 @@ from fns.collectors.web_scraper import WebScraperCollector
 from fns.config import FnsConfig
 from fns.merger import merge_sources
 from fns.models import PipelineResult, ProxyNode, ProxyType
-from fns.parsers.detector import parse_auto
 from fns.parsers.base import ParseResult
+from fns.parsers.detector import parse_auto
 from fns.validators.tcp_validator import TcpValidator
 
 logger = logging.getLogger("fns")
@@ -27,6 +27,7 @@ logger = logging.getLogger("fns")
 # Validation cache TTL: skip re-validating nodes checked within this window (seconds)
 _VALIDATION_CACHE_TTL = 1800  # 30 minutes
 _VALIDATION_CACHE_FILE = "fns.cache.json"
+_VALIDATION_CACHE_VERSION = 2
 
 
 def _load_validation_cache(output_dir: Path) -> dict[tuple, tuple[bool, float, float]]:
@@ -38,10 +39,17 @@ def _load_validation_cache(output_dir: Path) -> dict[tuple, tuple[bool, float, f
         raw = json.loads(cache_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+    if not isinstance(raw, dict) or raw.get("_version") != _VALIDATION_CACHE_VERSION:
+        logger.warning(
+            "Ignoring stale validation cache (version mismatch or missing version)"
+        )
+        return {}
     cache: dict[tuple, tuple[bool, float, float]] = {}
     for key_str, val in raw.items():
+        if key_str == "_version":
+            continue
         parts = key_str.split("|", 2)
-        if len(parts) == 3:
+        if len(parts) == 3 and isinstance(val, list) and len(val) == 3:
             cache[(parts[0], int(parts[1]), parts[2])] = (val[0], val[1], val[2])
     return cache
 
@@ -50,7 +58,7 @@ def _save_validation_cache(
     output_dir: Path, cache: dict[tuple, tuple[bool, float, float]]
 ) -> None:
     cache_path = output_dir / _VALIDATION_CACHE_FILE
-    raw: dict[str, list] = {}
+    raw: dict[str, object] = {"_version": _VALIDATION_CACHE_VERSION}
     for (addr, port, ptype), (alive, lat, ts) in cache.items():
         raw[f"{addr}|{port}|{ptype}"] = [alive, lat, ts]
     cache_path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
@@ -180,7 +188,10 @@ async def run_pipeline(
 
             if len(existing_alive) >= effective_max:
                 # Already enough — just write and return
-                logger.info(f"Already have {len(existing_alive)} alive nodes (target={effective_max}), skipping collection")
+                logger.info(
+                    f"Already have {len(existing_alive)} alive nodes "
+                    f"(target={effective_max}), skipping collection"
+                )
                 existing_alive = existing_alive[:effective_max]
                 _save_validation_cache(output_dir, validation_cache)
                 _write_outputs(existing_alive, cfg, output_dir, errors)
@@ -201,8 +212,6 @@ async def run_pipeline(
             _save_validation_cache(output_dir, validation_cache)
             _write_outputs(existing_alive, cfg, output_dir, errors)
         return PipelineResult(nodes=existing_alive, sources_used=0, parse_errors=errors)
-
-    shortage = effective_max - len(existing_alive) if effective_max > 0 else 0
 
     # Run all collectors concurrently
     async def _collect_one(collector):
@@ -239,12 +248,23 @@ async def run_pipeline(
 
     # ── 2. Parse ───────────────────────────────────────────────────────────
 
+    # Bound CPU-bound parsing; spawning an unbounded number of threads adds
+    # overhead without making base64/YAML parsing meaningfully faster.
+    parse_sem = asyncio.Semaphore(min(32, max(1, len(all_raw))))
+
     async def _parse_one(raw: RawContent):
         """Parse a single raw content item in a thread (CPU-bound)."""
-        try:
-            return await asyncio.to_thread(parse_auto, raw.text, raw.source_url), raw.collector_name
-        except Exception as e:
-            return ParseResult(errors=[f"Parse error for {raw.source_url}: {e}"]), raw.collector_name
+        async with parse_sem:
+            try:
+                return (
+                    await asyncio.to_thread(parse_auto, raw.text, raw.source_url),
+                    raw.collector_name,
+                )
+            except Exception as e:
+                return (
+                    ParseResult(errors=[f"Parse error for {raw.source_url}: {e}"]),
+                    raw.collector_name,
+                )
 
     source_nodes: dict[str, list] = {}
     parse_tasks = [_parse_one(raw) for raw in all_raw]
@@ -287,13 +307,17 @@ async def run_pipeline(
                 for node in batch:
                     if node.is_alive:
                         new_alive.append(node)
-                logger.info(f"  Batch {i // batch_size + 1}: {len(new_alive)}/{pool_target} alive found so far")
+                logger.info(
+                    f"  Batch {i // batch_size + 1}: "
+                    f"{len(new_alive)}/{pool_target} alive found so far"
+                )
 
             # Sort by lowest latency, take exactly remaining
             new_alive.sort(key=lambda n: n.latency_ms if n.latency_ms is not None else 99999)
             new_nodes = new_alive[:remaining]
             logger.info(
-                f"Selected {len(new_nodes)} lowest-latency nodes from {len(new_alive)} alive candidates"
+                f"Selected {len(new_nodes)} lowest-latency nodes "
+                f"from {len(new_alive)} alive candidates"
             )
         else:
             await validator.validate_all(new_nodes)
@@ -318,7 +342,10 @@ async def run_pipeline(
         max_total=effective_max if effective_max > 0 else None,
     )
     alive_count = len(all_nodes)
-    logger.info(f"Final: {alive_count} alive nodes (from {len(existing_alive)} existing + {len(new_alive_nodes)} new)")
+    logger.info(
+        f"Final: {alive_count} alive nodes "
+        f"(from {len(existing_alive)} existing + {len(new_alive_nodes)} new)"
+    )
 
     # ── 6. Output ──────────────────────────────────────────────────────────
 

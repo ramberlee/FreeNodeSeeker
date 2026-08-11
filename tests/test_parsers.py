@@ -1,5 +1,7 @@
 """Test all parsers against fixtures."""
 
+import base64
+
 from fns.models import ProxyType
 from fns.parsers.base64_sub import Base64SubParser
 from fns.parsers.clash_yaml import ClashYamlParser
@@ -91,7 +93,9 @@ class TestClashYamlParser:
         assert n.uuid == "test-uuid"
 
     def test_can_parse(self):
-        assert ClashYamlParser.can_parse("proxies:\n  - name: x\n    type: ss\n    server: x\n    port: 1\n") is True
+        assert ClashYamlParser.can_parse(
+            "proxies:\n  - name: x\n    type: ss\n    server: x\n    port: 1\n"
+        ) is True
         assert ClashYamlParser.can_parse("not yaml proxies:") is False
 
 
@@ -102,17 +106,38 @@ class TestBase64SubParser:
     def test_can_parse_non_b64(self):
         assert Base64SubParser.can_parse("hello world") is False
 
+    def test_parse_clash_yaml_in_base64(self):
+        yaml_text = (
+            "proxies:\n"
+            "  - name: Test\n"
+            "    type: ss\n"
+            "    server: 1.1.1.1\n"
+            "    port: 8388\n"
+            "    cipher: aes-256-gcm\n"
+            "    password: pwd\n"
+        )
+        payload = base64.b64encode(yaml_text.encode()).decode()
+        result = Base64SubParser().parse(payload, "test")
+        assert len(result.nodes) == 1
+        assert result.nodes[0].node_type == ProxyType.SS
+
 
 class TestSip008Parser:
     def test_can_parse(self):
-        json_str = '[{"server": "1.1.1.1", "server_port": 8388, "method": "aes-256-gcm", "password": "pwd"}]'
+        json_str = (
+            '[{"server": "1.1.1.1", "server_port": 8388, '
+            '"method": "aes-256-gcm", "password": "pwd"}]'
+        )
         assert Sip008Parser.can_parse(json_str) is True
 
     def test_can_parse_non_sip(self):
         assert Sip008Parser.can_parse('[{"key": "value"}]') is False
 
     def test_parse(self):
-        json_str = '[{"server": "1.1.1.1", "server_port": 8388, "method": "aes-256-gcm", "password": "pwd", "remarks": "Test"}]'
+        json_str = (
+            '[{"server": "1.1.1.1", "server_port": 8388, '
+            '"method": "aes-256-gcm", "password": "pwd", "remarks": "Test"}]'
+        )
         parser = Sip008Parser()
         result = parser.parse(json_str, "test")
 
@@ -137,10 +162,20 @@ class TestDetector:
         assert pre is not None  # pre-parsed YAML data should be returned
 
     def test_detect_sip008(self):
-        json_str = '[{"server": "1.1.1.1", "server_port": 8388, "method": "aes-256-gcm", "password": "pwd"}]'
+        json_str = (
+            '[{"server": "1.1.1.1", "server_port": 8388, '
+            '"method": "aes-256-gcm", "password": "pwd"}]'
+        )
         fmt, pre = detect_format(json_str)
         assert fmt == "sip008"
 
     def test_parse_auto(self):
         result = parse_auto(SAMPLE_MULTI_URI, "test")
         assert len(result.nodes) == 3
+
+    def test_detect_base64_reuses_decoded_text(self):
+        payload = base64.b64encode(SAMPLE_MULTI_URI.encode()).decode()
+        fmt, pre = detect_format(payload)
+        assert fmt == "base64_sub"
+        assert pre == SAMPLE_MULTI_URI
+        assert len(parse_auto(payload, "test").nodes) == 3

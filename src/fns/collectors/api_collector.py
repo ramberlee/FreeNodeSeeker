@@ -22,20 +22,28 @@ class ApiCollector(BaseCollector):
         self.config = config
 
     async def collect(self) -> list[RawContent]:
-        results: list[RawContent] = []
-        async with make_session() as sess:
-            for url in self.config.urls:
+        urls = self.config.urls
+        if not urls:
+            return []
+
+        # Bounded concurrency: subscriptions are independent and often slow.
+        sem = asyncio.Semaphore(min(10, max(1, len(urls))))
+
+        async def _fetch_one(sess: aiohttp.ClientSession, url: str) -> RawContent | None:
+            async with sem:
                 try:
-                    content = await self._fetch(sess, url)
-                    if content:
-                        results.append(content)
+                    return await self._fetch(sess, url)
                 except asyncio.TimeoutError:
                     logger.warning(f"Timeout fetching API: {url}")
                 except aiohttp.ClientError as e:
                     logger.warning(f"HTTP error for {url}: {e}")
                 except Exception as e:
                     logger.warning(f"Failed to fetch {url}: {e}")
-        return results
+                return None
+
+        async with make_session() as sess:
+            fetched = await asyncio.gather(*(_fetch_one(sess, url) for url in urls))
+        return [r for r in fetched if r is not None]
 
     async def _fetch(self, sess: aiohttp.ClientSession, url: str) -> RawContent | None:
         logger.debug(f"Fetching API: {url}")

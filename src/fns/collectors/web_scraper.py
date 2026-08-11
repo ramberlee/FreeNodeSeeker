@@ -90,17 +90,30 @@ class WebScraperCollector(BaseCollector):
                 )
 
         # 2. Links to .yaml/.yml/.txt files
+        link_sem = asyncio.Semaphore(8)
+        seen_hrefs: set[str] = set()
+        link_tasks = []
+
+        async def _fetch_link(href: str) -> RawContent | None:
+            async with link_sem:
+                try:
+                    return await self._fetch_linked(sess, href, url)
+                except Exception:
+                    return None
+
         for a in soup.find_all("a", href=True):
             href = a.get("href")
-            if not isinstance(href, str) or not href:
+            if not isinstance(href, str) or not href or href in seen_hrefs:
                 continue
             if SUB_LINK_RE.search(href):
-                try:
-                    sub_content = await self._fetch_linked(sess, href, url)
-                    if sub_content:
-                        results.append(sub_content)
-                except Exception:
-                    pass
+                seen_hrefs.add(href)
+                link_tasks.append(_fetch_link(href))
+
+        if link_tasks:
+            fetched = await asyncio.gather(*link_tasks)
+            for item in fetched:
+                if item:
+                    results.append(item)
 
         # 3. Embedded proxy URIs in page text
         page_text = soup.get_text()

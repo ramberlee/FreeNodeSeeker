@@ -26,29 +26,38 @@ class Base64SubParser(BaseParser):
     """Parse base64-encoded subscription content."""
 
     @staticmethod
-    def can_parse(text: str) -> bool:
-        clean = text.strip()
-        if not clean:
-            return False
+    def try_decode(text: str) -> str | None:
+        """Best-effort base64 decode; returns decoded text or None."""
         try:
-            decoded = safe_b64decode(clean)
-            decoded_str = decoded.decode("utf-8", errors="ignore").strip()
-            return any(
-                decoded_str.startswith(p) or decoded_str.startswith("[") or "proxies" in decoded_str
-                for p in URI_PREFIXES + ("{",)
-            )
+            decoded = safe_b64decode(text.strip()).decode("utf-8", errors="replace").strip()
         except Exception:
-            return False
+            return None
+        return decoded or None
+
+    @staticmethod
+    def is_subscription_text(decoded: str) -> bool:
+        return any(
+            decoded.startswith(p) or decoded.startswith("[") or "proxies" in decoded
+            for p in URI_PREFIXES + ("{",)
+        )
+
+    @staticmethod
+    def can_parse(text: str) -> bool:
+        decoded = Base64SubParser.try_decode(text)
+        return decoded is not None and Base64SubParser.is_subscription_text(decoded)
 
     def parse(self, text: str, source: str = "", pre_parsed: object = None) -> ParseResult:
         result = ParseResult(format_detected="base64_sub")
         uri_parser = ProxyUriParser()
 
-        try:
-            decoded = safe_b64decode(text.strip()).decode("utf-8", errors="replace")
-        except Exception as e:
-            result.errors.append(f"Base64 decode failed: {e}")
-            return result
+        if isinstance(pre_parsed, str) and pre_parsed:
+            decoded = pre_parsed
+        else:
+            try:
+                decoded = safe_b64decode(text.strip()).decode("utf-8", errors="replace")
+            except Exception as e:
+                result.errors.append(f"Base64 decode failed: {e}")
+                return result
 
         decoded = decoded.strip()
 
@@ -58,6 +67,12 @@ class Base64SubParser(BaseParser):
             result.nodes = sub_result.nodes
             result.errors = sub_result.errors
             return result
+
+        # Case 1b: Clash YAML embedded in base64
+        if "proxies" in decoded:
+            from fns.parsers.clash_yaml import ClashYamlParser
+
+            return ClashYamlParser().parse(decoded, source)
 
         # Case 2: JSON array (V2Ray server list)
         if decoded.startswith("["):
