@@ -90,7 +90,7 @@ class WebScraperCollector(BaseCollector):
                 )
 
         # 2. Links to .yaml/.yml/.txt files
-        link_sem = asyncio.Semaphore(8)
+        link_sem = asyncio.Semaphore(20)
         seen_hrefs: set[str] = set()
         link_tasks = []
 

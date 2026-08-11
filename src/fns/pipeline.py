@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fns.collectors.api_collector import ApiCollector
@@ -19,6 +20,7 @@ from fns.config import FnsConfig
 from fns.merger import merge_sources
 from fns.models import PipelineResult, ProxyNode, ProxyType
 from fns.parsers.base import ParseResult
+from fns.parsers.base64_sub import Base64SubParser
 from fns.parsers.detector import parse_auto
 from fns.validators.tcp_validator import TcpValidator
 
@@ -28,6 +30,27 @@ logger = logging.getLogger("fns")
 _VALIDATION_CACHE_TTL = 1800  # 30 minutes
 _VALIDATION_CACHE_FILE = "fns.cache.json"
 _VALIDATION_CACHE_VERSION = 2
+
+_PARSE_CHUNK_LINES = 20_000
+_URI_PREFIXES = ("vmess://", "vless://", "ss://", "trojan://", "hysteria2://", "hy2://", "tuic://")
+
+
+def _split_parse_chunks(raw: RawContent) -> list[str]:
+    """Split large URI-line subscriptions into independently parseable chunks."""
+    text = raw.text
+    if raw.format_hint != "proxy_uri":
+        decoded = Base64SubParser.try_decode(text)
+        if decoded is not None and decoded.lstrip().startswith(_URI_PREFIXES):
+            text = decoded
+    if not text.lstrip().startswith(_URI_PREFIXES):
+        return []
+    lines = text.splitlines()
+    if len(lines) < _PARSE_CHUNK_LINES:
+        return []
+    return [
+        "\n".join(lines[i : i + _PARSE_CHUNK_LINES])
+        for i in range(0, len(lines), _PARSE_CHUNK_LINES)
+    ]
 
 
 def _load_validation_cache(output_dir: Path) -> dict[tuple, tuple[bool, float, float]]:
@@ -248,30 +271,61 @@ async def run_pipeline(
 
     # ── 2. Parse ───────────────────────────────────────────────────────────
 
-    # Bound CPU-bound parsing; spawning an unbounded number of threads adds
-    # overhead without making base64/YAML parsing meaningfully faster.
-    parse_sem = asyncio.Semaphore(min(32, max(1, len(all_raw))))
+    # Parse with a dedicated thread pool. Large URI-line subscriptions are
+    # split into chunks so one huge source does not serialize all parsing.
+    loop = asyncio.get_running_loop()
+    parse_workers = min(64, max(1, len(all_raw)))
+    parse_sem = asyncio.Semaphore(parse_workers)
+    parse_executor = ThreadPoolExecutor(
+        max_workers=parse_workers, thread_name_prefix="fns-parse"
+    )
+
+    async def _run_parse(text: str, source: str) -> ParseResult:
+        async with parse_sem:
+            return await loop.run_in_executor(parse_executor, parse_auto, text, source)
 
     async def _parse_one(raw: RawContent):
-        """Parse a single raw content item in a thread (CPU-bound)."""
-        async with parse_sem:
-            try:
-                return (
-                    await asyncio.to_thread(parse_auto, raw.text, raw.source_url),
-                    raw.collector_name,
-                )
-            except Exception as e:
-                return (
-                    ParseResult(errors=[f"Parse error for {raw.source_url}: {e}"]),
-                    raw.collector_name,
-                )
+        try:
+            chunks = await loop.run_in_executor(
+                parse_executor, _split_parse_chunks, raw
+            )
+        except Exception:
+            chunks = []
+        if not chunks:
+            chunks = [raw.text]
+
+        try:
+            results = await asyncio.gather(
+                *(_run_parse(chunk, raw.source_url) for chunk in chunks),
+                return_exceptions=True,
+            )
+        except Exception as e:
+            return (
+                ParseResult(errors=[f"Parse error for {raw.source_url}: {e}"]),
+                raw.collector_name,
+            )
+
+        nodes: list[ProxyNode] = []
+        parse_errors: list[str] = []
+        for result in results:
+            if isinstance(result, Exception):
+                parse_errors.append(f"Parse error for {raw.source_url}: {result}")
+            else:
+                nodes.extend(result.nodes)
+                parse_errors.extend(result.errors)
+        return ParseResult(nodes=nodes, errors=parse_errors), raw.collector_name
 
     source_nodes: dict[str, list] = {}
-    parse_tasks = [_parse_one(raw) for raw in all_raw]
-    parse_results = await asyncio.gather(*parse_tasks)
+    try:
+        parse_tasks = [_parse_one(raw) for raw in all_raw]
+        parse_results = await asyncio.gather(*parse_tasks)
+    finally:
+        parse_executor.shutdown(wait=True)
+
     for result, collector_name in parse_results:
         if result.nodes:
-            source_nodes.setdefault(collector_name, []).extend(result.nodes)
+            valid_nodes = [n for n in result.nodes if n.address and n.port > 0]
+            source_nodes.setdefault(collector_name, []).extend(valid_nodes)
         if result.errors:
             errors.extend(result.errors)
 

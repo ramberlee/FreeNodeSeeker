@@ -44,8 +44,11 @@ class GithubCollector(BaseCollector):
 
         n_queries = len(self.config.search_queries)
         timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        connector = aiohttp.TCPConnector(limit=0, ttl_dns_cache=300)
 
-        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as sess:
+        async with aiohttp.ClientSession(
+            headers=headers, timeout=timeout, connector=connector
+        ) as sess:
             # Concurrent search with semaphore to respect rate limits
             # GitHub: 10 req/min unauthenticated, 30 req/min authenticated
             search_sem = asyncio.Semaphore(3 if self.config.token else 2)
@@ -126,8 +129,8 @@ class GithubCollector(BaseCollector):
         seen_urls: set[str] | None = None,
     ) -> list[RawContent]:
         results: list[RawContent] = []
-        sem = asyncio.Semaphore(5)  # Limit concurrent README downloads
-        link_sem = asyncio.Semaphore(20)
+        sem = asyncio.Semaphore(30)  # Concurrent README downloads
+        link_sem = asyncio.Semaphore(80)
         if seen_urls is None:
             seen_urls = set()
 
