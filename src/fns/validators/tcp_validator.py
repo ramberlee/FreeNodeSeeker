@@ -9,51 +9,48 @@ import shutil
 import socket
 import tempfile
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 
 import aiohttp
 
 from fns.config import ValidatorConfig
+from fns.formatters.clash import node_to_clash_proxy
 from fns.models import ProxyNode, ProxyType
 
 logger = logging.getLogger("fns")
 
-# ── sing-box binary discovery ────────────────────────────────────────────────
+# ── mihomo binary discovery ──────────────────────────────────────────────────
 
-_SINGBOX_PATH: str | None = None
+_MIHOMO_PATH: str | None = None
 
 
-def _find_singbox() -> str | None:
-    """Locate sing-box binary on the system."""
-    global _SINGBOX_PATH
-    if _SINGBOX_PATH is not None:
-        return _SINGBOX_PATH
+def _find_mihomo() -> str | None:
+    """Locate mihomo binary on the system."""
+    global _MIHOMO_PATH
+    if _MIHOMO_PATH is not None:
+        return _MIHOMO_PATH
 
+    root = Path(__file__).resolve().parent.parent.parent.parent
     candidates = [
-        "sing-box",
-        "sing-box.exe",
-        shutil.which("sing-box"),
-        shutil.which("sing-box.exe"),
+        str(root / "bin" / "mihomo.exe"),
+        str(root / "bin" / "mihomo"),
+        str(root / ".venv" / "Scripts" / "mihomo.exe"),
+        shutil.which("mihomo"),
+        shutil.which("mihomo.exe"),
     ]
-    # Check venv Scripts directory (4 levels up from validators/)
-    from pathlib import Path
-    venv_scripts = str(Path(__file__).parent.parent.parent.parent / ".venv" / "Scripts")
-    for name in ["sing-box.exe", "sing-box"]:
-        p = os.path.join(venv_scripts, name)
-        if os.path.exists(p):
-            candidates.insert(0, p)
 
     for candidate in candidates:
         if candidate and os.path.exists(candidate):
-            _SINGBOX_PATH = candidate
-            logger.info(f"Found sing-box at {candidate}")
+            _MIHOMO_PATH = candidate
+            logger.info(f"Found mihomo at {candidate}")
             return candidate
 
     logger.warning(
-        "sing-box not found — VMess/VLESS/Hysteria2/TUIC will be "
+        "mihomo not found — VMess/VLESS/Hysteria2/TUIC will be "
         "marked dead (no real proxy validation)"
     )
-    _SINGBOX_PATH = ""
+    _MIHOMO_PATH = ""
     return None
 
 
@@ -121,81 +118,20 @@ async def _send_http_get(
     return _is_success_status(status)
 
 
-# ── sing-box subprocess validator ─────────────────────────────────────────────
+# ── mihomo subprocess validator ──────────────────────────────────────────────
 
 
-def _build_singbox_config(node: ProxyNode, listen_port: int) -> dict:
-    """Generate a minimal sing-box config that routes through *node*."""
-    outbound: dict = {
-        "type": node.node_type.value,
-        "server": node.address,
-        "server_port": node.port,
-    }
-
-    if node.node_type == ProxyType.VMESS:
-        outbound["uuid"] = node.uuid or ""
-        outbound["security"] = node.encryption or "auto"
-        outbound["alter_id"] = 0
-        t = node.transport or "tcp"
-        if t == "ws":
-            outbound["transport"] = {"type": "ws", "path": node.ws_path or "/"}
-            if node.ws_host:
-                outbound["transport"]["headers"] = {"Host": node.ws_host}
-        if node.tls:
-            outbound["tls"] = {"enabled": True, "server_name": node.sni or node.address}
-            if node.fingerprint:
-                outbound["tls"]["utls"] = {"enabled": True, "fingerprint": node.fingerprint}
-
-    elif node.node_type == ProxyType.VLESS:
-        outbound["uuid"] = node.uuid or ""
-        outbound["flow"] = node.flow or ""
-        t = node.transport or "tcp"
-        if t == "ws":
-            outbound["transport"] = {"type": "ws", "path": node.ws_path or "/"}
-            if node.ws_host:
-                outbound["transport"]["headers"] = {"Host": node.ws_host}
-        if node.tls:
-            outbound["tls"] = {"enabled": True, "server_name": node.sni or node.address}
-            if node.fingerprint:
-                outbound["tls"]["utls"] = {"enabled": True, "fingerprint": node.fingerprint}
-        if node.public_key:
-            outbound.setdefault("tls", {})["reality"] = {
-                "enabled": True,
-                "public_key": node.public_key,
-                "short_id": node.short_id or "",
-            }
-
-    elif node.node_type == ProxyType.HYSTERIA2:
-        outbound["password"] = node.password or ""
-        outbound["tls"] = {"enabled": True, "server_name": node.sni or node.address}
-        if node.obfs:
-            outbound["obfs"] = {"type": node.obfs, "password": node.obfs_password or ""}
-
-    elif node.node_type == ProxyType.TUIC:
-        outbound["uuid"] = node.uuid or ""
-        outbound["password"] = node.password or ""
-        outbound["tls"] = {"enabled": True, "server_name": node.sni or node.address}
-        outbound["congestion_control"] = node.congestion_control or "bbr"
-
-    elif node.node_type == ProxyType.TROJAN:
-        outbound["password"] = node.password or ""
-        outbound["tls"] = {"enabled": True, "server_name": node.sni or node.address}
-        if node.fingerprint:
-            outbound["tls"]["utls"] = {"enabled": True, "fingerprint": node.fingerprint}
-        t = node.transport or "tcp"
-        if t == "ws":
-            outbound["transport"] = {"type": "ws", "path": node.ws_path or "/"}
-            if node.ws_host:
-                outbound["transport"]["headers"] = {"Host": node.ws_host}
-
-    elif node.node_type == ProxyType.SS:
-        outbound["method"] = node.method or "aes-256-gcm"
-        outbound["password"] = node.password or ""
-
+def _build_mihomo_config(node: ProxyNode, listen_port: int) -> dict:
+    """Generate a minimal mihomo config that routes through *node*."""
+    proxy = node_to_clash_proxy(node)
+    name = proxy["name"]
     return {
-        "log": {"level": "error"},
-        "inbounds": [{"type": "http", "listen": "127.0.0.1", "listen_port": listen_port}],
-        "outbounds": [outbound],
+        "log-level": "error",
+        "port": listen_port,
+        "mode": "rule",
+        "proxies": [proxy],
+        "proxy-groups": [{"name": "TEST", "type": "select", "proxies": [name]}],
+        "rules": ["MATCH,TEST"],
     }
 
 
@@ -219,35 +155,34 @@ async def _wait_for_port(port: int, timeout: float) -> bool:
     return False
 
 
-async def _validate_via_singbox(
+async def _validate_via_mihomo(
     node: ProxyNode,
     test_url: str,
     timeout: float,
     session: aiohttp.ClientSession | None = None,
 ) -> tuple[bool, float | None]:
-    """Test a node by starting sing-box and routing a request through it.
+    """Test a node by starting mihomo and routing a request through it.
 
     Returns (is_alive, latency_ms).
     """
-    binary = _find_singbox()
+    binary = _find_mihomo()
     if not binary:
         return False, None
 
     port = _free_port()
-    config = _build_singbox_config(node, port)
-
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False, encoding="utf-8"
-    )
+    config = _build_mihomo_config(node, port)
+    work_dir = tempfile.mkdtemp(prefix="fns-mihomo-")
+    config_path = os.path.join(work_dir, "config.json")
     try:
-        json.dump(config, tmp, indent=2)
-        tmp.close()
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
 
         proc = await asyncio.create_subprocess_exec(
             binary,
-            "run",
-            "-c",
-            tmp.name,
+            "-f",
+            config_path,
+            "-d",
+            work_dir,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -296,10 +231,7 @@ async def _validate_via_singbox(
                 except ProcessLookupError:
                     pass
     finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+        shutil.rmtree(work_dir, ignore_errors=True)
 
     return False, None
 
@@ -314,8 +246,8 @@ class TcpValidator:
       HTTP    → aiohttp native proxy
       SOCKS5  → aiohttp-socks ProxyConnector
       SS      → pproxy Connection
-      Trojan  → pproxy Connection (pure Python), sing-box (subprocess)
-      VMess/VLESS/Hysteria2/TUIC → sing-box subprocess (no TCP fallback)
+      Trojan  → pproxy Connection (pure Python)
+      VMess/VLESS/Hysteria2/TUIC → mihomo subprocess (no TCP fallback)
     """
 
     def __init__(self, config: ValidatorConfig):
@@ -324,8 +256,8 @@ class TcpValidator:
         self.retries = config.retries
         self.test_url = config.test_url
         self._semaphore = asyncio.Semaphore(config.concurrency)
-        # sing-box 进程启动是主要开销，提高并发比限制更合理
-        self._singbox_sem = asyncio.Semaphore(max(1, config.concurrency // 2))
+        # mihomo 进程启动是主要开销，提高并发比限制更合理
+        self._mihomo_sem = asyncio.Semaphore(max(1, config.concurrency // 2))
         self._shared_session: aiohttp.ClientSession | None = None
         self._session_owner: bool = False
 
@@ -357,7 +289,7 @@ class TcpValidator:
         if not nodes:
             return nodes
 
-        # Separate nodes into simple (direct handler) and complex (TCP pre-filter → sing-box)
+        # Separate nodes into simple (direct handler) and complex (TCP pre-filter → mihomo)
         simple_nodes: list[ProxyNode] = []
         complex_nodes: list[ProxyNode] = []
 
@@ -449,10 +381,10 @@ class TcpValidator:
 
         # VMess, VLESS, Hysteria2, TUIC: TCP pre-filter already done in validate_all,
         # go straight to full protocol validation.
-        if _find_singbox():
-            return await self._try_singbox(node)
+        if _find_mihomo():
+            return await self._try_mihomo(node)
         logger.warning(
-            f"No sing-box available; marking {node.node_type.value}://"
+            f"No mihomo available; marking {node.node_type.value}://"
             f"{node.address}:{node.port} dead instead of using a TCP-only check"
         )
         node.is_alive = False
@@ -658,13 +590,13 @@ class TcpValidator:
         node.latency_ms = None
         return node
 
-    # ── sing-box (VMess / VLESS / Hysteria2 / TUIC) ─────────────────────
+    # ── mihomo (VMess / VLESS / Hysteria2 / TUIC) ───────────────────────
 
-    async def _try_singbox(self, node: ProxyNode) -> ProxyNode:
-        async with self._singbox_sem:
+    async def _try_mihomo(self, node: ProxyNode) -> ProxyNode:
+        async with self._mihomo_sem:
             session = await self._get_session()
             for attempt in range(self.retries + 1):
-                ok, lat = await _validate_via_singbox(
+                ok, lat = await _validate_via_mihomo(
                     node, self.test_url, self.timeout, session=session
                 )
                 if ok:
@@ -679,7 +611,7 @@ class TcpValidator:
     # ── TCP fallback ────────────────────────────────────────────────────
 
     async def _try_tcp_fallback(self, node: ProxyNode) -> ProxyNode:
-        """Basic TCP port check — used when sing-box is unavailable.
+        """Basic TCP port check — used when mihomo is unavailable.
 
         WARNING: This only checks if the TCP port is reachable. It does NOT
         verify that the node actually proxies traffic. False positives are expected.
@@ -698,7 +630,7 @@ class TcpValidator:
                     logger.warning(
                         f"TCP-only validation for {node.node_type.value}://"
                         f"{node.address}:{node.port} "
-                        f"— NOT a real proxy test! Install sing-box for accurate validation."
+                        f"— NOT a real proxy test! Install mihomo for accurate validation."
                     )
                 writer.close()
                 try:

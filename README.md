@@ -9,6 +9,7 @@
 - 多协议验证：HTTP、SOCKS5、SS、Trojan、VMess、VLESS、Hysteria2、TUIC
 - 增量更新与验证缓存，缩短每次采集时间
 - 输出 Clash Meta YAML、Base64 订阅、JSON
+- Clash 输出内置策略组：节点选择、自动最快、综合打分、国家/地区分组
 - 内置 HTTP 服务，可直接作为客户端订阅 URL
 - `daemon` 定时采集，支持 Windows 批处理启动
 
@@ -31,7 +32,7 @@ fns run -n 10
 - `output/fns.txt`：Base64 订阅
 - `output/fns.json`：JSON 节点数据（需在配置中启用）
 
-导入 Clash Verge / Mihomo 时使用 `output/fns.yaml`，其他客户端可使用 `output/fns.txt`。
+导入 Clash Verge Rev / Mihomo 时使用 `output/fns.yaml`，其他客户端可使用 `output/fns.txt`。
 
 ## 常用命令
 
@@ -70,7 +71,7 @@ output:
 max_alive_nodes: 10
 ```
 
-配置文件使用 snake_case 字段名，例如 `socks_port`、`log_level`。
+配置文件使用 snake_case 字段名，例如 `allow_lan`、`log_level`。
 
 ## 文档
 

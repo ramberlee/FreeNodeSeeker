@@ -16,6 +16,7 @@ dependencies = [
     "pyyaml>=6.0",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
+    "maxminddb>=2.0",
     "pydantic>=2.0",
     "orjson>=3.9",
     "yarl>=1.9",

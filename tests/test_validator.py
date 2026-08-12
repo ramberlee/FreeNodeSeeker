@@ -4,7 +4,11 @@ import pytest
 
 from fns.config import ValidatorConfig
 from fns.models import ProxyNode, ProxyType
-from fns.validators.tcp_validator import TcpValidator, _is_success_status
+from fns.validators.tcp_validator import (
+    TcpValidator,
+    _build_mihomo_config,
+    _is_success_status,
+)
 
 
 class TestTcpValidator:
@@ -63,8 +67,8 @@ class TestTcpValidator:
         assert result.is_alive is False
 
     @pytest.mark.asyncio
-    async def test_unreachable_vmess_without_singbox(self):
-        """VMess without sing-box should be marked dead, not TCP-only alive."""
+    async def test_unreachable_vmess_without_mihomo(self):
+        """VMess without mihomo should be marked dead, not TCP-only alive."""
         cfg = ValidatorConfig(
             concurrency=1, timeout=2.0, retries=0, test_url="http://www.google.com/"
         )
@@ -77,6 +81,16 @@ class TestTcpValidator:
         )
         result = await validator.validate_one(node)
         assert result.is_alive is False
+
+    def test_build_mihomo_config(self, sample_vmess_node):
+        config = _build_mihomo_config(sample_vmess_node, 12345)
+        assert config["port"] == 12345
+        assert config["mode"] == "rule"
+        assert len(config["proxies"]) == 1
+        assert config["proxies"][0]["type"] == "vmess"
+        assert config["proxies"][0]["server"] == "1.2.3.4"
+        assert config["proxy-groups"][0]["proxies"] == [config["proxies"][0]["name"]]
+        assert config["rules"] == ["MATCH,TEST"]
 
     def test_is_success_status_accepts_only_2xx(self):
         assert _is_success_status(200) is True

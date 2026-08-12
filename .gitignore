@@ -13,12 +13,14 @@ htmlcov/
 .mypy_cache/
 output/
 logs/
+bin/
 *.yaml
 !fns.example.yaml
 .env
 .idea/
 .vscode/
 .claude/
+.codegraph/
 .mypy_cache/
 .pytest_cache/
 .venv/

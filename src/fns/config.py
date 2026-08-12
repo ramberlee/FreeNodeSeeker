@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
-
 
 # --- Sources ---
 
@@ -57,8 +55,6 @@ class ValidatorConfig(BaseModel):
 # --- Output ---
 
 class ClashOutputConfig(BaseModel):
-    port: int = 7890
-    socks_port: int = 7891
     allow_lan: bool = False
     mode: str = "Rule"
     log_level: str = "info"
@@ -122,7 +118,7 @@ def load_config(path: Path | None = None) -> FnsConfig:
         path = find_config()
     if path is None or not path.exists():
         return FnsConfig()
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return FnsConfig(**data)
 

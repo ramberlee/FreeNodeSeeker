@@ -55,7 +55,7 @@ fns run -n 10
 
 | 文件 | 说明 |
 |------|------|
-| `output/fns.yaml` | Clash Meta 配置，可直接导入 Clash Verge / Mihomo |
+| `output/fns.yaml` | Clash Meta 配置，可直接导入 Clash Verge Rev / Mihomo |
 | `output/fns.txt` | Base64 通用订阅 |
 | `output/fns.json` | JSON 节点元数据（需在配置中启用） |
 | `output/fns.cache.json` | 验证缓存，自动生成 |
@@ -66,7 +66,7 @@ fns run -n 10
 
 - Windows 10+ / Linux / macOS
 - Python 3.10+
-- 可选：sing-box（用于 VMess / VLESS / Hysteria2 / TUIC 的真实代理验证）
+- 可选：mihomo（用于 VMess / VLESS / Hysteria2 / TUIC 的真实代理验证）
 
 ### 安装步骤
 
@@ -79,20 +79,25 @@ python -m venv .venv
 pip install -e .
 ```
 
-### 安装 sing-box（推荐）
+### 安装 mihomo（推荐）
 
-sing-box 用于 VMess / VLESS / Hysteria2 / TUIC 协议的真实代理验证。未安装时，这些协议会直接标记为不可用，而不是做 TCP 端口假验证。
+mihomo 用于 VMess / VLESS / Hysteria2 / TUIC 协议的真实代理验证。未安装时，这些协议会直接标记为不可用，而不是做 TCP 端口假验证。
 
-从 [sing-box releases](https://github.com/SagerNet/sing-box/releases) 下载对应平台的二进制文件，放到以下任一位置：
+从 [mihomo releases](https://github.com/MetaCubeX/mihomo/releases) 下载对应平台的二进制文件，放到以下任一位置：
 
-- `.venv/Scripts/sing-box.exe`（Windows）
+- `bin/mihomo.exe`（项目目录，Windows）
+- `.venv/Scripts/mihomo.exe`（Windows）
 - 系统 PATH 中的任意目录
 
 验证安装：
 
 ```powershell
-sing-box version
+mihomo -v
 ```
+
+### GeoIP 数据库（可选）
+
+国别识别的 GeoIP 兜底需要本地 GeoLite2 Country 数据库，放到 `bin/geolite2-country.mmdb`，可从 [P3TERX/GeoLite.mmdb](https://github.com/P3TERX/GeoLite.mmdb/releases/latest) 下载。缺少数据库时，无法从节点名识别的节点会归入 `🏳️ 未标注`。
 
 ## 命令行
 
@@ -225,8 +230,7 @@ output:
     - clash
     - base64
   clash:
-    port: 7890
-    socks_port: 7891
+    # 监听端口由客户端决定，订阅中不写死
     allow_lan: false
     mode: Rule
     log_level: info
@@ -266,8 +270,6 @@ logging:
 | `validator.test_url` | str | `http://www.google.com/` | 验证时请求的目标 URL |
 | `output.dir` | str | `./output` | 输出目录 |
 | `output.formats` | list | `["clash", "base64"]` | 支持 `clash` / `base64` / `json` |
-| `output.clash.port` | int | `7890` | Clash 混合代理端口 |
-| `output.clash.socks_port` | int | `7891` | Clash SOCKS 端口 |
 | `output.clash.allow_lan` | bool | `false` | 是否允许局域网访问 |
 | `output.clash.mode` | str | `Rule` | Clash 模式 |
 | `output.clash.log_level` | str | `info` | Clash 日志级别 |
@@ -279,7 +281,7 @@ logging:
 | `logging.level` | str | `INFO` | 日志级别 |
 | `logging.file` | str / null | `null` | 日志文件路径 |
 
-注意：配置文件使用 snake_case 字段名，例如 `socks_port`、`log_level`。写成 `socks-port` 或 `log-level` 会被忽略，保持默认值。
+注意：配置文件使用 snake_case 字段名，例如 `allow_lan`、`log_level`。写成 `allow-lan` 或 `log-level` 会被忽略，保持默认值。
 
 ## 采集与验证流程
 
@@ -305,7 +307,7 @@ logging:
 
 - 所有节点先做快速 TCP 预筛，不可达节点直接跳过完整协议测试
 - HTTP / SOCKS5 / SS / Trojan 使用 aiohttp / pproxy 做真实代理请求
-- VMess / VLESS / Hysteria2 / TUIC 使用 sing-box 子进程验证；未安装 sing-box 时标记为不可用
+- VMess / VLESS / Hysteria2 / TUIC 使用 mihomo 子进程验证；未安装 mihomo 时标记为不可用
 - 验证结果写入 `output/fns.cache.json`，30 分钟内复用
 
 ### 增量更新
@@ -322,9 +324,24 @@ logging:
 
 | 格式 | 文件 | 用途 |
 |------|------|------|
-| Clash | `output/fns.yaml` | Clash Verge / Mihomo 等客户端 |
+| Clash | `output/fns.yaml` | Clash Verge Rev / Mihomo 等客户端 |
 | Base64 | `output/fns.txt` | V2Ray / Clash 通用订阅 |
 | JSON | `output/fns.json` | 完整节点元数据 |
+
+### Clash 策略组
+
+生成的 `output/fns.yaml` 内置以下策略组：
+
+- `🚀 节点选择`：总开关，可切换各组、DIRECT 或单个节点
+- `⚡ 自动最快`：包含全部节点的 url-test 组，每 5 分钟用 `https://www.youtube.com/generate_204` 测速
+- `综合打分`：包含全部节点的 select 手动选择组
+- 国家/地区组：节点数 ≥3 的国家单独成组（如 `🇯🇵 日本·141`），测速间隔按节点数自动调整，≥100 节点每 2 分钟，否则每 1 分钟
+- `🌍 其他`：节点数少于 3 的国家合并
+- `🏳️ 未标注`：无法识别归属的节点
+
+国别识别优先解析节点名（国旗 emoji、中文国名、ISO 代码、常见英文别名），失败后使用 `bin/geolite2-country.mmdb` 按服务器 IP 补识别。
+
+分流规则：内网 IP 直连 → `GEOIP,CN,DIRECT` → 其余走 `🚀 节点选择`。配置使用 `geodata-mode: true`，客户端需提供 `geoip.dat`（Clash Verge Rev 自带）。
 
 ### HTTP 端点
 
@@ -371,15 +388,15 @@ src/fns/
 
 ## 故障排除
 
-### sing-box 未找到
+### mihomo 未找到
 
 日志提示：
 
 ```text
-sing-box not found — VMess/VLESS/Hysteria2/TUIC will be marked dead
+mihomo not found — VMess/VLESS/Hysteria2/TUIC will be marked dead
 ```
 
-安装 sing-box 到 PATH 或 `.venv/Scripts/` 后重新运行。未安装时，VMess / VLESS / Hysteria2 / TUIC 不会进入 TCP 假验证，而是直接标记为不可用。
+安装 mihomo 到项目 `bin/`、PATH 或 `.venv/Scripts/` 后重新运行。未安装时，VMess / VLESS / Hysteria2 / TUIC 不会进入 TCP 假验证，而是直接标记为不可用。
 
 ### GitHub 搜索 401 / 403
 
@@ -407,7 +424,7 @@ WARNING  GitHub API error: SSLCertVerificationError
 
 ### 所有节点验证失败
 
-1. 确认 sing-box 已安装：`sing-box version`
+1. 确认 mihomo 已安装：`mihomo -v`
 2. 确认测试 URL 可访问：`fns check 1.1.1.1 80`
 3. 免费节点时效短，定期重新采集
 4. 调高 `validator.timeout`，例如 `10.0`
