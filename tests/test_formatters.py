@@ -92,6 +92,27 @@ class TestClashOutput:
         assert clash_module._group_interval(99) == 60
         assert clash_module._group_interval(100) == 120
 
+    def test_vless_reality_requires_public_key(self, sample_vless_node):
+        proxy = clash_module.node_to_clash_proxy(sample_vless_node)
+        assert proxy["reality-opts"] == {
+            "public-key": "qwerty123",
+            "short-id": "abcd",
+        }
+
+    def test_vless_without_public_key_omits_reality_opts(self):
+        node = ProxyNode(
+            node_type=ProxyType.VLESS,
+            address="vless.example.com",
+            port=443,
+            uuid="b831381d-6324-4d53-ad4f-8cda48b30811",
+            tls=True,
+            sni="vless.example.com",
+            fingerprint="chrome",
+            flow="xtls-rprx-vision",
+        )
+        proxy = clash_module.node_to_clash_proxy(node)
+        assert "reality-opts" not in proxy
+
     def test_empty_nodes(self):
         cfg = ClashOutputConfig()
         output = format_clash([], cfg)

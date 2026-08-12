@@ -75,20 +75,18 @@ def node_to_clash_proxy(node: ProxyNode) -> dict:
         proxy["network"] = node.transport or "tcp"
         proxy["servername"] = node.sni or ""
         proxy["flow"] = node.flow or ""
-        proxy["reality-opts"] = {}
         if node.public_key:
-            proxy["reality-opts"]["public-key"] = node.public_key
-        if node.short_id:
-            proxy["reality-opts"]["short-id"] = node.short_id
-        if node.fingerprint:
-            proxy["reality-opts"]["fingerprint"] = node.fingerprint
+            reality_opts = {"public-key": node.public_key}
+            if node.short_id:
+                reality_opts["short-id"] = node.short_id
+            if node.fingerprint:
+                reality_opts["fingerprint"] = node.fingerprint
+            proxy["reality-opts"] = reality_opts
         if node.transport == "ws":
             proxy["ws-opts"] = {
                 "path": node.ws_path or "/",
                 "headers": {"Host": node.ws_host or node.address},
             }
-        if not proxy["reality-opts"]:
-            del proxy["reality-opts"]
 
     elif node.node_type == ProxyType.SS:
         proxy["cipher"] = node.method or "aes-256-gcm"
