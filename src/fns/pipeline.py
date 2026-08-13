@@ -447,6 +447,8 @@ async def run_pipeline(
             source_nodes.setdefault(collector_name, []).extend(valid_nodes)
         if result.errors:
             errors.extend(result.errors)
+            for err in result.errors:
+                logger.debug("Parse error: %s", err)
 
     github_nodes = source_nodes.get("github")
     if github_nodes and len(github_nodes) > cfg.sources.github.max_collect_nodes:

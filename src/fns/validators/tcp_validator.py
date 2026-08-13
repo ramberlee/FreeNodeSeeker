@@ -357,6 +357,13 @@ class TcpValidator:
 
         alive = sum(1 for n in nodes if n.is_alive)
         logger.info(f"Validation done: {alive}/{len(nodes)} alive")
+        if logger.isEnabledFor(logging.DEBUG):
+            for n in nodes:
+                if not n.is_alive:
+                    logger.debug(
+                        f"Validation failed: {n.node_type.value}://{n.address}:{n.port} "
+                        f"-> {n.validation_error}"
+                    )
         return nodes
 
     async def _tcp_prefilter_batch(self, nodes: list[ProxyNode]) -> list[ProxyNode]:

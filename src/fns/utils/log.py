@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 
 from rich.console import Console
@@ -22,4 +21,5 @@ def setup_logging(level: str = "INFO", file_path: str | None = None) -> None:
         format="%(message)s",
         datefmt="[%X]",
         handlers=handlers,
+        force=True,
     )

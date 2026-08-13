@@ -254,6 +254,23 @@ class TestTcpValidator:
         assert len(alive) == 0
 
     @pytest.mark.asyncio
+    async def test_validate_all_logs_dead_reasons(self, caplog):
+        cfg = ValidatorConfig(
+            concurrency=1, timeout=2.0, retries=0, test_url="http://www.google.com/"
+        )
+        validator = TcpValidator(cfg)
+        node = ProxyNode(node_type=ProxyType.HTTP, address="192.0.2.10", port=9999)
+
+        with caplog.at_level("DEBUG", logger="fns"):
+            await validator.validate_all([node])
+
+        assert any(
+            "Validation failed" in record.message
+            and "tcp_unreachable" in record.message
+            for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
     async def test_validate_all_prefilters_every_node(self, monkeypatch):
         cfg = ValidatorConfig(
             concurrency=2, timeout=2.0, retries=0, test_url="http://www.google.com/"
