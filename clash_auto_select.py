@@ -9,6 +9,7 @@ Clash Verge Rev —— 延迟 + 带宽综合自动选线工具
   3. 经 Clash 的 mixed 代理端口下载测试文件, 测每个节点的带宽(MB/s)
   4. 综合延迟与带宽打分, 自动把目标 select 分组切到最优节点
   5. 每 INTERVAL 秒循环一次(INTERVAL<=0 则只跑一轮)
+  6. 每轮评估前重新获取节点列表, 订阅更新后无需重启
 
 与 Clash 原生 url-test 的区别:
   原生 url-test 只看延迟; 本脚本额外考虑带宽, 更适合"既要稳又要快"。
@@ -24,9 +25,48 @@ import time
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
+if sys.platform == "win32":
+    import ctypes
+
+    ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    ctypes.windll.kernel32.SetConsoleCP(65001)
+
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(errors="replace")
-    sys.stderr.reconfigure(errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
+LOG_FILE = os.getenv(
+    "CLASH_LOG",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "clash_auto_select.log"),
+)
+
+
+class Tee:
+    """把输出同时写到控制台和日志文件。"""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            stream.write(data)
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+
+def setup_log_file():
+    path = os.path.abspath(LOG_FILE)
+    log_dir = os.path.dirname(path)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    log = open(path, "a", encoding="utf-8", buffering=1)
+    sys.stdout = Tee(sys.__stdout__, log)
+    sys.stderr = Tee(sys.__stderr__, log)
+
+
+setup_log_file()
 
 # ============================ 配置(可用环境变量覆盖) ============================
 CTRL      = os.getenv("CLASH_CTRL", "http://127.0.0.1:9097")   # External Controller 地址
@@ -69,6 +109,22 @@ def walk(pname: str, proxies: dict, path: list, out: list):
             walk(child, proxies, path + [pname], out)
     else:
         out.append((pname, path))
+
+
+def collect_leaves(s: requests.Session) -> list:
+    """重新拉取 /proxies, 递归展开目标分组并去重, 返回本轮要评估的叶子节点"""
+    proxies = get_proxies(s)
+    if GROUP not in proxies:
+        avail = [k for k, v in proxies.items() if v.get("type") in GROUP_TYPES]
+        raise ValueError(f"找不到分组 '{GROUP}', 可用分组: {avail}")
+    leaves = []
+    walk(GROUP, proxies, [], leaves)
+    seen, uniq = set(), []
+    for n, p in leaves:
+        if n not in seen:
+            seen.add(n)
+            uniq.append((n, p))
+    return uniq
 
 
 def select_path(s: requests.Session, full_path: list):
@@ -142,28 +198,21 @@ def evaluate(s: requests.Session, leaves: list):
 
 def main():
     s = api()
-    try:
-        proxies = get_proxies(s)
-    except Exception as e:
-        print(f"[!] 无法连接 Clash Controller ({CTRL}): {e}")
-        print("    请确认 Clash Verge Rev 已开启 External Controller 并填写正确的地址/secret。")
-        sys.exit(1)
-
-    if GROUP not in proxies:
-        avail = [k for k, v in proxies.items() if v.get("type") in GROUP_TYPES]
-        print(f"[!] 找不到分组 '{GROUP}'。可用的分组有:")
-        print("   ", avail)
-        sys.exit(1)
-
-    leaves = []
-    walk(GROUP, proxies, [], leaves)
-    seen, uniq = set(), []
-    for n, p in leaves:
-        if n not in seen:
-            seen.add(n)
-            uniq.append((n, p))
-
     while True:
+        try:
+            uniq = collect_leaves(s)
+        except Exception as e:
+            if isinstance(e, requests.RequestException):
+                print(f"[!] 无法连接 Clash Controller ({CTRL}): {e}")
+                print("    请确认 Clash Verge Rev 已开启 External Controller 并填写正确的地址/secret。")
+            else:
+                print(f"[!] 获取节点列表失败: {e}")
+            if INTERVAL <= 0:
+                sys.exit(1)
+            print(f"[*] {INTERVAL}s 后重试 ...\n")
+            time.sleep(INTERVAL)
+            continue
+
         results = evaluate(s, uniq)
         cands = [r for r in results if r[5]]   # 带宽测速成功的真实节点
         if cands:

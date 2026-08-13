@@ -12,6 +12,7 @@
 - Clash 输出内置策略组：节点选择、自动最快、综合打分、国家/地区分组
 - 内置 HTTP 服务，可直接作为客户端订阅 URL
 - `daemon` 定时采集，支持 Windows 批处理启动
+- Clash 自动选线：配合 Clash Verge Rev，综合延迟与带宽自动切换最优节点
 
 ## 快速开始
 
@@ -24,6 +25,9 @@ fns config init
 # 编辑 fns.yaml，配置 api.urls 或 github.search_queries
 
 fns run -n 10
+
+# Windows 一键启动：Clash Verge + 自动选线 + 每 2 小时采集
+start_daemon.bat 2
 ```
 
 运行完成后，输出文件在 `output/`：
@@ -41,6 +45,7 @@ fns run -n 10
 | `fns run` | 执行一次完整采集管线 |
 | `fns run -n 10 --serve` | 采集 10 个存活节点并启动 HTTP 服务 |
 | `fns daemon -i 2` | 每 2 小时定时采集 |
+| `start_daemon.bat 2` | Windows 一键启动：Clash Verge + 自动选线 + 定时采集 |
 | `fns validate <url>` | 验证单个订阅 URL |
 | `fns check <host> <port> -T <type>` | 检查单个代理节点 |
 | `fns sources list -a` | 查看全部采集源 |

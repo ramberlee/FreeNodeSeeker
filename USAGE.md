@@ -8,6 +8,8 @@ FreeNodeSeeker 自动从多个公开源收集免费的 V2Ray / Clash 订阅节�
 - [快速开始](#快速开始)
 - [安装](#安装)
 - [命令行](#命令行)
+- [Clash 自动选线](#clash-自动选线)
+- [Windows 一键启动](#windows-一键启动)
 - [配置说明](#配置说明)
 - [采集与验证流程](#采集与验证流程)
 - [输出与 HTTP 服务](#输出与-http-服务)
@@ -33,11 +35,12 @@ collect → parse → validate → merge → output
 - 多格式输出：Clash Meta YAML、Base64 订阅、JSON
 - 内置 HTTP 服务：把输出文件作为订阅 URL 提供给客户端
 - 守护进程：按固定间隔定时采集
+- Clash 自动选线：经 External Controller API 综合延迟与带宽，自动把 select 分组切到最优节点
 
 ## 快速开始
 
 ```powershell
-cd E:\agents\FreeNodeSeeker
+cd D:\agents\FreeNodeSeeker
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
@@ -59,6 +62,8 @@ fns run -n 10
 | `output/fns.txt` | Base64 通用订阅 |
 | `output/fns.json` | JSON 节点元数据（需在配置中启用） |
 | `output/fns.cache.json` | 验证缓存，自动生成 |
+
+Windows 也可以直接运行 `start_daemon.bat 2` 一键启动 Clash Verge、自动选线和定时采集，详见 [Windows 一键启动](#windows-一键启动)。
 
 ## 安装
 
@@ -182,6 +187,84 @@ fns config init -p my.yaml # 生成到指定路径
 fns config show            # 显示当前配置
 fns config path            # 显示配置文件路径
 ```
+
+## Clash 自动选线
+
+`clash_auto_select.py` 是独立的自动选线守护脚本，与 FreeNodeSeeker 采集管线解耦。它通过 Clash 的 External Controller API 管理客户端，每轮评估前都会重新拉取节点列表，订阅更新后无需重启。
+
+工作原理：
+
+1. 递归展开目标 select 分组，收集分组下所有叶子节点
+2. 并行调用 `/proxies/{name}/delay` 测延迟（默认 16 线程）
+3. 按延迟阈值筛选，对延迟最低的 `CLASH_TOPK` 个节点经 mixed 代理端口下载测试文件测带宽
+4. 按 `带宽 - 延迟/1000 × CLASH_W_LAT` 打分，把目标分组切到得分最高的节点
+5. 每 `CLASH_INTERVAL` 秒循环一次；`CLASH_INTERVAL <= 0` 时只跑一轮
+
+与 Clash 原生 `url-test` 的区别：`url-test` 只看延迟，本工具额外考虑带宽，更适合“既要稳又要快”的场景。
+
+### 准备
+
+- 使用 Clash Verge Rev（或其他支持 External Controller 的 Clash 内核客户端）导入 `output/fns.yaml`
+- 在 Clash Verge Rev 中开启 External Controller，记下地址、secret 和 mixed 端口
+- 确认要管理的顶层 select 分组存在，默认是 `综合打分`
+- 依赖 `requests`，执行 `pip install -e .` 后已包含
+
+### 运行
+
+```powershell
+python clash_auto_select.py
+```
+
+Windows 可直接运行 `clash_auto_select.bat`，Git Bash / Linux / macOS 可运行 `./clash_auto_select.sh`。输出同时写入控制台和 `logs/clash_auto_select.log`。
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CLASH_CTRL` | `http://127.0.0.1:9097` | External Controller 地址 |
+| `CLASH_SECRET` | `set-your-secret` | External Controller secret |
+| `CLASH_PROXY` | `http://127.0.0.1:7897` | mixed 代理端口，用于带宽测速下载 |
+| `CLASH_GROUP` | `综合打分` | 要管理的顶层 select 分组名 |
+| `CLASH_DELAY_URL` | `https://www.google.com/generate_204` | 延迟测试 URL |
+| `CLASH_TEST_URL` | `https://speed.cloudflare.com/__down?bytes=3000000` | 带宽测试下载 URL（约 3 MB） |
+| `CLASH_TEST_TIMEOUT` | `40` | 单节点测速超时（秒） |
+| `CLASH_INTERVAL` | `300` | 自动选线间隔（秒），`<=0` 只跑一轮 |
+| `CLASH_LAT_THRESH` | `1500` | 延迟超过该值（ms）直接淘汰 |
+| `CLASH_DELAY_TIMEOUT` | `2000` | 单节点延迟测试超时（ms） |
+| `CLASH_W_LAT` | `5.0` | 延迟惩罚权重，每 1000 ms 扣对应 MB/s |
+| `CLASH_LAT_WORKERS` | `16` | 延迟测试并发线程数 |
+| `CLASH_TOPK` | `0` | 只对延迟最低的前 N 个节点测带宽，`0` 为全部 |
+| `CLASH_LOG` | `logs/clash_auto_select.log` | 日志文件路径 |
+
+Windows 示例：
+
+```powershell
+set CLASH_SECRET=your-secret
+set CLASH_GROUP=节点选择
+set CLASH_INTERVAL=120
+clash_auto_select.bat
+```
+
+Git Bash / Linux 示例：
+
+```bash
+CLASH_SECRET=your-secret CLASH_GROUP=节点选择 CLASH_INTERVAL=120 ./clash_auto_select.sh
+```
+
+## Windows 一键启动
+
+`start_daemon.bat` 一次启动完整运行环境：
+
+```powershell
+start_daemon.bat 2
+```
+
+参数为 `fns daemon` 的采集间隔（小时）。脚本会：
+
+1. 启动 Clash Verge Rev（默认路径 `D:\Program Files\Clash Verge\clash-verge.exe`，安装位置不同时请修改批处理文件）
+2. 等待 5 秒让客户端初始化
+3. 启动自动选线：优先用 Git Bash 运行 `clash_auto_select.sh`，没有 Git Bash 时回退到 `clash_auto_select.bat`，日志写入 `logs/clash_auto_select.log`
+4. 运行 `fns.bat daemon -i <interval>` 定时采集
 
 ## 配置说明
 
@@ -375,15 +458,19 @@ ruff check src tests
 项目布局：
 
 ```text
-src/fns/
-├── collectors/       # 采集器：API / GitHub / 网页
-├── parsers/          # 订阅格式解析
-├── validators/       # 节点连通性验证
-├── formatters/       # 输出格式化
-├── pipeline.py       # 管线编排
-├── scheduler.py      # daemon 定时任务
-├── server.py         # HTTP 订阅服务
-└── config.py         # 配置模型
+项目根目录/
+├── src/fns/
+│   ├── collectors/       # 采集器：API / GitHub / 网页
+│   ├── parsers/          # 订阅格式解析
+│   ├── validators/       # 节点连通性验证
+│   ├── formatters/       # 输出格式化
+│   ├── pipeline.py       # 管线编排
+│   ├── scheduler.py      # daemon 定时任务
+│   ├── server.py         # HTTP 订阅服务
+│   └── config.py         # 配置模型
+├── clash_auto_select.py  # Clash 自动选线守护脚本
+├── clash_auto_select.bat / .sh  # 自动选线启动脚本
+└── start_daemon.bat      # Windows 一键启动
 ```
 
 ## 故障排除
@@ -428,6 +515,27 @@ WARNING  GitHub API error: SSLCertVerificationError
 2. 确认测试 URL 可访问：`fns check 1.1.1.1 80`
 3. 免费节点时效短，定期重新采集
 4. 调高 `validator.timeout`，例如 `10.0`
+
+### 自动选线无法连接 Controller
+
+```text
+[!] 无法连接 Clash Controller (http://127.0.0.1:9097)
+```
+
+排查：
+
+1. 在 Clash Verge Rev 中开启 External Controller，并确认地址和端口
+2. 用 `CLASH_CTRL`、`CLASH_SECRET` 覆盖默认地址和 secret
+3. 确认 `CLASH_PROXY` 与客户端的 mixed 端口一致
+
+### 全部节点延迟为 None
+
+延迟测试 URL 在节点侧不可达（例如被墙）时会出现。换一个可达的测试 URL：
+
+```powershell
+set CLASH_DELAY_URL=https://www.gstatic.com/generate_204
+clash_auto_select.bat
+```
 
 ### 输出为空
 
