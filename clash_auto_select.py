@@ -73,7 +73,7 @@ CTRL      = os.getenv("CLASH_CTRL", "http://127.0.0.1:9097")   # External Contro
 SECRET    = os.getenv("CLASH_SECRET", "set-your-secret")      # Clash Verge Rev 里设置的 secret
 PROXY     = os.getenv("CLASH_PROXY", "http://127.0.0.1:7897")  # Clash mixed 端口(用作下载代理)
 GROUP     = os.getenv("CLASH_GROUP", "综合打分")                # 要管理的顶层 select 分组名
-DELAY_URL = os.getenv("CLASH_DELAY_URL", "https://www.google.com/generate_204")  # 延迟测试 URL
+DELAY_URL = os.getenv("CLASH_DELAY_URL", "https://cp.cloudflare.com/generate_204")  # 延迟测试 URL
 TEST_URL  = os.getenv("CLASH_TEST_URL", "https://speed.cloudflare.com/__down?bytes=3000000")   # 3MB
 TIMEOUT   = int(os.getenv("CLASH_TEST_TIMEOUT", "40"))         # 单节点测速超时(秒)
 INTERVAL  = int(os.getenv("CLASH_INTERVAL", "300"))            # 自动选线间隔(秒); <=0 只跑一轮
@@ -237,8 +237,8 @@ def main():
                 if total > 0 and none_cnt == total:
                     print(f"    [诊断] 全部 {total} 个节点延迟都为 None, 极可能是延迟测试 URL "
                           f"({DELAY_URL}) 在节点侧不可达(如被墙)。请换一个可达的测试 URL, 例如:")
-                    print(f"    export CLASH_DELAY_URL=http://connect.rom.miui.com/generate_204")
-                    print(f"    export CLASH_DELAY_URL=https://www.gstatic.com/generate_204")
+                    print("    export CLASH_DELAY_URL=http://connect.rom.miui.com/generate_204")
+                    print("    export CLASH_DELAY_URL=https://cp.cloudflare.com/generate_204")
                 print()
         if INTERVAL <= 0:
             break

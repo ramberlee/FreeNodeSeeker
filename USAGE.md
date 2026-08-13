@@ -28,7 +28,7 @@ collect → parse → validate → merge → output
 主要能力：
 
 - 多源采集：GitHub 代码搜索、API / 订阅 URL、网页抓取
-- 多格式解析：Base64 订阅、Clash YAML、SIP008 JSON、单条代理 URI
+- 多格式解析：Base64 订阅、Clash YAML、SIP008 JSON、sing-box JSON、单条代理 URI
 - 多协议验证：HTTP、SOCKS5、SS、Trojan、VMess、VLESS、Hysteria2、TUIC
 - 增量更新：已有存活节点足够时跳过采集，只补充差额
 - 验证缓存：30 分钟内复用已验证结果，避免重复检查
@@ -234,7 +234,7 @@ Windows 可直接运行 `clash_auto_select.bat`，Git Bash / Linux / macOS 可�
 | `CLASH_SECRET` | `set-your-secret` | External Controller secret |
 | `CLASH_PROXY` | `http://127.0.0.1:7897` | mixed 代理端口，用于带宽测速下载 |
 | `CLASH_GROUP` | `综合打分` | 要管理的顶层 select 分组名 |
-| `CLASH_DELAY_URL` | `https://www.google.com/generate_204` | 延迟测试 URL |
+| `CLASH_DELAY_URL` | `https://cp.cloudflare.com/generate_204` | 延迟测试 URL |
 | `CLASH_TEST_URL` | `https://speed.cloudflare.com/__down?bytes=3000000` | 带宽测试下载 URL（约 3 MB） |
 | `CLASH_TEST_TIMEOUT` | `40` | 单节点测速超时（秒） |
 | `CLASH_INTERVAL` | `300` | 自动选线间隔（秒），`<=0` 只跑一轮 |
@@ -387,7 +387,7 @@ logging:
 
 ### 解析
 
-- 自动检测格式：Base64、Clash YAML、SIP008、代理 URI
+- 自动检测格式：Base64、Clash YAML、SIP008、sing-box JSON、代理 URI
 - Base64 内容只解码一次，解码结果直接传给解析器
 - 支持 base64 包裹的 Clash YAML
 - 解析在线程池中执行，避免大量内容时阻塞事件循环

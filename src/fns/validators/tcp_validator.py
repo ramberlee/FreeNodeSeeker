@@ -173,6 +173,7 @@ async def _validate_via_mihomo(
     """
     binary = _find_mihomo()
     if not binary:
+        node.validation_error = "mihomo_not_available"
         return False, None
 
     port = _free_port()
@@ -195,6 +196,7 @@ async def _validate_via_mihomo(
 
         try:
             if not await _wait_for_port(port, min(timeout, 3.0)):
+                node.validation_error = "mihomo_startup_failed"
                 return False, None
 
             start = time.monotonic()
@@ -205,6 +207,7 @@ async def _validate_via_mihomo(
                     test_url, proxy=proxy_url, allow_redirects=False
                 ) as resp:
                     if not _is_success_status(resp.status):
+                        node.validation_error = f"proxy_status_{resp.status}"
                         return False, None
                     await resp.read()
             else:
@@ -215,12 +218,14 @@ async def _validate_via_mihomo(
                         test_url, proxy=proxy_url, allow_redirects=False
                     ) as resp:
                         if not _is_success_status(resp.status):
+                            node.validation_error = f"proxy_status_{resp.status}"
                             return False, None
                         await resp.read()
 
             elapsed = (time.monotonic() - start) * 1000
             return True, round(elapsed, 1)
         except Exception:
+            node.validation_error = "mihomo_request_failed"
             return False, None
         finally:
             try:
@@ -245,6 +250,11 @@ async def _validate_via_mihomo(
                     pass
     finally:
         if stderr_tail:
+            if node.validation_error in (None, "mihomo_request_failed"):
+                node.validation_error = (
+                    "mihomo_error: "
+                    + stderr_tail[-200:].decode("utf-8", errors="replace")
+                )
             logger.debug(
                 f"mihomo stderr for {node.node_type.value}://{node.address}:{node.port}: "
                 f"{stderr_tail[-500:]!r}"
@@ -663,7 +673,8 @@ class TcpValidator:
 
         node.is_alive = False
         node.latency_ms = None
-        node.validation_error = "proxy_request_failed"
+        if not node.validation_error:
+            node.validation_error = "proxy_request_failed"
         return node
 
     # ── TCP fallback ────────────────────────────────────────────────────

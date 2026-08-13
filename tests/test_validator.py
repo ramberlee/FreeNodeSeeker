@@ -162,6 +162,35 @@ class TestTcpValidator:
         assert result.is_alive is False
 
     @pytest.mark.asyncio
+    async def test_mihomo_keeps_detailed_failure_reason(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1, timeout=2.0, retries=0, test_url="http://www.google.com/"
+        )
+        validator = TcpValidator(cfg)
+
+        async def fake_validate(node, test_url, timeout, session=None):
+            node.validation_error = "proxy_status_403"
+            return False, None
+
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._find_mihomo", lambda: "mihomo.exe"
+        )
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._validate_via_mihomo", fake_validate
+        )
+
+        node = ProxyNode(
+            node_type=ProxyType.VLESS,
+            address="192.0.2.7",
+            port=443,
+            uuid="b831381d-6324-4d53-ad4f-8cda48b30811",
+        )
+        result = await validator.validate_one(node)
+
+        assert result.is_alive is False
+        assert result.validation_error == "proxy_status_403"
+
+    @pytest.mark.asyncio
     async def test_http_proxy_auth_handling(self, monkeypatch):
         cfg = ValidatorConfig(
             concurrency=1, timeout=2.0, retries=0, test_url="http://www.google.com/"

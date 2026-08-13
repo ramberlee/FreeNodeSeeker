@@ -287,6 +287,73 @@ class TestClashYamlParser:
         assert ClashYamlParser.can_parse("not yaml proxies:") is False
 
 
+class TestSingBoxParser:
+    def test_parse_vless_ws(self):
+        text = json.dumps(
+            {
+                "outbounds": [
+                    {
+                        "type": "vless",
+                        "tag": "Test-VLESS",
+                        "server": "1.2.3.4",
+                        "server_port": 443,
+                        "uuid": "b831381d-6324-4d53-ad4f-8cda48b30811",
+                        "tls": {
+                            "enabled": True,
+                            "server_name": "example.com",
+                        },
+                        "transport": {
+                            "type": "ws",
+                            "path": "/ws",
+                            "headers": {"Host": "ws.example.com"},
+                        },
+                    }
+                ]
+            }
+        )
+        result = parse_auto(text, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.VLESS
+        assert n.address == "1.2.3.4"
+        assert n.port == 443
+        assert n.transport == "ws"
+        assert n.ws_path == "/ws"
+        assert n.ws_host == "ws.example.com"
+        assert n.tls is True
+        assert n.sni == "example.com"
+        assert n.remark == "Test-VLESS"
+
+    def test_parse_trojan_grpc(self):
+        text = json.dumps(
+            {
+                "outbounds": [
+                    {
+                        "type": "trojan",
+                        "tag": "Test-Trojan",
+                        "server": "trojan.example.com",
+                        "server_port": 443,
+                        "password": "pw",
+                        "tls": {"enabled": True, "insecure": True},
+                        "transport": {
+                            "type": "grpc",
+                            "service_name": "example-service",
+                        },
+                    }
+                ]
+            }
+        )
+        result = parse_auto(text, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.TROJAN
+        assert n.transport == "grpc"
+        assert n.grpc_service_name == "example-service"
+        assert n.skip_cert_verify is True
+
+
 class TestBase64SubParser:
     def test_can_parse(self):
         assert Base64SubParser.can_parse("dm1lc3M6Ly8=") is True

@@ -12,6 +12,7 @@ from fns.parsers.base import ParseResult
 from fns.parsers.base64_sub import Base64SubParser
 from fns.parsers.clash_yaml import ClashYamlParser
 from fns.parsers.proxy_uri import ProxyUriParser
+from fns.parsers.singbox import SingBoxParser
 from fns.parsers.sip008 import Sip008Parser
 
 logger = logging.getLogger("fns")
@@ -39,6 +40,8 @@ def detect_format(text: str) -> tuple[str, object]:
 
     try:
         data = yaml.safe_load(clean)
+        if isinstance(data, dict) and "outbounds" in data:
+            return "singbox", data
         if isinstance(data, dict) and ("proxies" in data or "port" in data):
             return "clash_yaml", data
     except yaml.YAMLError:
@@ -61,6 +64,7 @@ _PARSERS = {
     "base64_sub": Base64SubParser(),
     "clash_yaml": ClashYamlParser(),
     "sip008": Sip008Parser(),
+    "singbox": SingBoxParser(),
 }
 
 
