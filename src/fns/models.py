@@ -24,11 +24,15 @@ class ProxyNode:
     # Auth
     uuid: str | None = None
     password: str | None = None
+    username: str | None = None
 
     # Protocol params
     method: str | None = None
     encryption: str | None = None
     flow: str | None = None
+    plugin: str | None = None
+    plugin_opts: dict | None = None
+    grpc_service_name: str | None = None
 
     # Transport
     transport: str | None = None  # tcp, ws, grpc, quic, h2
@@ -38,6 +42,7 @@ class ProxyNode:
     # TLS / Reality
     tls: bool = False
     sni: str | None = None
+    skip_cert_verify: bool = False
     fingerprint: str | None = None
     public_key: str | None = None
     short_id: str | None = None
@@ -53,6 +58,7 @@ class ProxyNode:
     # Quality
     latency_ms: float | None = None
     is_alive: bool = False
+    validation_error: str | None = None
 
     # Metadata
     source: str | None = None

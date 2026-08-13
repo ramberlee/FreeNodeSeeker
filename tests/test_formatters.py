@@ -11,6 +11,7 @@ from fns.formatters.base64_sub import format_base64_sub
 from fns.formatters.clash import format_clash
 from fns.formatters.json_output import format_json
 from fns.models import ProxyNode, ProxyType
+from fns.parsers.proxy_uri import ProxyUriParser
 from fns.utils.crypto import safe_b64decode
 
 
@@ -113,6 +114,97 @@ class TestClashOutput:
         proxy = clash_module.node_to_clash_proxy(node)
         assert "reality-opts" not in proxy
 
+    def test_ss_plugin_options(self):
+        node = ProxyNode(
+            node_type=ProxyType.SS,
+            address="5.6.7.8",
+            port=8388,
+            password="test123",
+            method="aes-256-gcm",
+            plugin="v2ray-plugin",
+            plugin_opts={"mode": "websocket", "tls": True, "host": "example.com", "path": "/ws"},
+            remark="SS Plugin",
+        )
+        proxy = clash_module.node_to_clash_proxy(node)
+        assert proxy["plugin"] == "v2ray-plugin"
+        assert proxy["plugin-opts"] == {
+            "mode": "websocket",
+            "tls": True,
+            "host": "example.com",
+            "path": "/ws",
+        }
+
+    def test_trojan_grpc_skip_cert_verify(self):
+        node = ProxyNode(
+            node_type=ProxyType.TROJAN,
+            address="trojan.example.com",
+            port=443,
+            password="pw",
+            transport="grpc",
+            tls=True,
+            grpc_service_name="svc",
+            skip_cert_verify=True,
+        )
+        proxy = clash_module.node_to_clash_proxy(node)
+        assert proxy["skip-cert-verify"] is True
+        assert proxy["grpc-opts"] == {"grpc-service-name": "svc"}
+
+    def test_tuic_hysteria2_skip_cert_verify(self):
+        tuic = ProxyNode(
+            node_type=ProxyType.TUIC,
+            address="tuic.example.com",
+            port=443,
+            uuid="uuid",
+            password="pass",
+            tls=True,
+            skip_cert_verify=True,
+        )
+        hy2 = ProxyNode(
+            node_type=ProxyType.HYSTERIA2,
+            address="hy2.example.com",
+            port=443,
+            password="pass",
+            tls=True,
+            skip_cert_verify=True,
+        )
+        assert clash_module.node_to_clash_proxy(tuic)["skip-cert-verify"] is True
+        assert clash_module.node_to_clash_proxy(hy2)["skip-cert-verify"] is True
+
+    def test_http_socks5_credentials(self):
+        http = ProxyNode(
+            node_type=ProxyType.HTTP,
+            address="1.1.1.1",
+            port=8080,
+            username="user",
+            password="pass",
+        )
+        socks5 = ProxyNode(
+            node_type=ProxyType.SOCKS5,
+            address="2.2.2.2",
+            port=1080,
+            username="user",
+            password="pass",
+        )
+        assert clash_module.node_to_clash_proxy(http)["username"] == "user"
+        assert clash_module.node_to_clash_proxy(http)["password"] == "pass"
+        assert clash_module.node_to_clash_proxy(socks5)["username"] == "user"
+        assert clash_module.node_to_clash_proxy(socks5)["password"] == "pass"
+
+    def test_vless_skip_cert_verify_grpc(self):
+        node = ProxyNode(
+            node_type=ProxyType.VLESS,
+            address="vless.example.com",
+            port=443,
+            uuid="uuid",
+            transport="grpc",
+            tls=True,
+            grpc_service_name="svc",
+            skip_cert_verify=True,
+        )
+        proxy = clash_module.node_to_clash_proxy(node)
+        assert proxy["skip-cert-verify"] is True
+        assert proxy["grpc-opts"] == {"grpc-service-name": "svc"}
+
     def test_empty_nodes(self):
         cfg = ClashOutputConfig()
         output = format_clash([], cfg)
@@ -130,6 +222,62 @@ class TestBase64Output:
     def test_empty_nodes(self):
         output = format_base64_sub([])
         assert output == ""
+
+    def _roundtrip_first(self, node):
+        output = format_base64_sub([node])
+        decoded = safe_b64decode(output).decode("utf-8")
+        return ProxyUriParser().parse(decoded, "test").nodes[0]
+
+    def test_ss_plugin_uri(self):
+        node = ProxyNode(
+            node_type=ProxyType.SS,
+            address="5.6.7.8",
+            port=8388,
+            password="test123",
+            method="aes-256-gcm",
+            plugin="v2ray-plugin",
+            plugin_opts={"mode": "websocket", "tls": True, "host": "example.com", "path": "/ws"},
+        )
+        parsed = self._roundtrip_first(node)
+        assert parsed.plugin == "v2ray-plugin"
+        assert parsed.plugin_opts == {
+            "mode": "websocket",
+            "tls": True,
+            "host": "example.com",
+            "path": "/ws",
+        }
+
+    def test_trojan_skip_cert_verify_uri(self):
+        node = ProxyNode(
+            node_type=ProxyType.TROJAN,
+            address="trojan.example.com",
+            port=443,
+            password="pw",
+            tls=True,
+            skip_cert_verify=True,
+        )
+        output = format_base64_sub([node])
+        decoded = safe_b64decode(output).decode("utf-8")
+        assert "allowInsecure=1" in decoded
+        parsed = self._roundtrip_first(node)
+        assert parsed.skip_cert_verify is True
+        assert parsed.tls is True
+
+    def test_tuic_insecure_uri(self):
+        node = ProxyNode(
+            node_type=ProxyType.TUIC,
+            address="tuic.example.com",
+            port=443,
+            uuid="uuid",
+            password="pass",
+            tls=True,
+            skip_cert_verify=True,
+        )
+        output = format_base64_sub([node])
+        decoded = safe_b64decode(output).decode("utf-8")
+        assert "insecure=1" in decoded
+        parsed = self._roundtrip_first(node)
+        assert parsed.skip_cert_verify is True
 
 
 class TestJsonOutput:

@@ -85,9 +85,13 @@ def _to_vless_uri(node: ProxyNode) -> str:
 
 def _to_ss_uri(node: ProxyNode) -> str:
     userinfo = safe_b64encode(
-        f"{node.method or 'aes-256-gcm'}:{node.password or ''}".encode("utf-8")
+        f"{node.method or 'aes-256-gcm'}:{node.password or ''}".encode()
     )
     uri = f"ss://{userinfo}@{node.address}:{node.port}"
+    if node.plugin:
+        plugin = _encode_ss_plugin(node.plugin, node.plugin_opts)
+        if plugin:
+            uri += f"/?plugin={plugin}"
     if node.remark:
         uri += f"#{quote(node.remark)}"
     return uri
@@ -103,6 +107,8 @@ def _to_trojan_uri(node: ProxyNode) -> str:
         params.append(f"host={quote(node.ws_host)}")
     if node.tls:
         params.append("security=tls")
+    if node.skip_cert_verify:
+        params.append("allowInsecure=1")
     if node.sni:
         params.append(f"sni={quote(node.sni)}")
     if node.fingerprint:
@@ -119,7 +125,7 @@ def _to_trojan_uri(node: ProxyNode) -> str:
 
 def _to_hysteria2_uri(node: ProxyNode) -> str:
     params = []
-    if not node.tls:
+    if not node.tls or node.skip_cert_verify:
         params.append("insecure=1")
     if node.sni:
         params.append(f"sni={quote(node.sni)}")
@@ -149,7 +155,7 @@ def _to_tuic_uri(node: ProxyNode) -> str:
     params = []
     if node.sni:
         params.append(f"sni={quote(node.sni)}")
-    if not node.tls:
+    if not node.tls or node.skip_cert_verify:
         params.append("insecure=1")
     if node.congestion_control:
         params.append(f"congestion_control={quote(node.congestion_control)}")
@@ -170,8 +176,21 @@ def format_base64_sub(nodes: list[ProxyNode]) -> str:
     if not nodes:
         return ""
     lines = [_node_to_uri(n) for n in nodes]
-    lines = [l for l in lines if l]
+    lines = [line for line in lines if line]
     if not lines:
         return ""
     content = "\n".join(lines)
     return base64.b64encode(content.encode("utf-8")).decode("ascii")
+
+
+def _encode_ss_plugin(name: str, opts: dict | None) -> str:
+    """Serialize SS plugin name/options into a SIP002 plugin query value."""
+    parts = [name]
+    for key, value in (opts or {}).items():
+        if value is True:
+            parts.append(str(key))
+        elif value is False or value is None or value == "":
+            continue
+        else:
+            parts.append(f"{key}={value}")
+    return quote(";".join(parts), safe="")

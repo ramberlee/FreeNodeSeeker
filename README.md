@@ -7,6 +7,7 @@
 - 多源采集：GitHub 代码搜索、API / 订阅 URL、网页抓取
 - 多格式解析：Base64、Clash YAML、SIP008、代理 URI
 - 多协议验证：HTTP、SOCKS5、SS、Trojan、VMess、VLESS、Hysteria2、TUIC
+- 完整协议选项：SS plugin、Trojan WS/GRPC、TUIC insecure、HTTP 代理认证
 - 增量更新与验证缓存，缩短每次采集时间
 - 输出 Clash Meta YAML、Base64 订阅、JSON
 - Clash 输出内置策略组：节点选择、自动最快、综合打分、国家/地区分组
@@ -35,6 +36,9 @@ start_daemon.bat 2
 - `output/fns.yaml`：Clash Meta 配置
 - `output/fns.txt`：Base64 订阅
 - `output/fns.json`：JSON 节点数据（需在配置中启用）
+- `output/fns.collected.jsonl`：本次运行采集到的全部解析节点快照
+- `output/fns.validation_report.json`：节点去重、验证和死亡原因汇总
+- `output/fns.state.json`：增量更新使用的内部节点状态
 
 导入 Clash Verge Rev / Mihomo 时使用 `output/fns.yaml`，其他客户端可使用 `output/fns.txt`。
 

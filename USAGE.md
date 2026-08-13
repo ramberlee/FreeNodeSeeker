@@ -62,6 +62,9 @@ fns run -n 10
 | `output/fns.txt` | Base64 通用订阅 |
 | `output/fns.json` | JSON 节点元数据（需在配置中启用） |
 | `output/fns.cache.json` | 验证缓存，自动生成 |
+| `output/fns.collected.jsonl` | 本次运行采集到的全部解析节点快照 |
+| `output/fns.validation_report.json` | 节点去重、验证和死亡原因汇总 |
+| `output/fns.state.json` | 增量更新使用的内部节点状态 |
 
 Windows 也可以直接运行 `start_daemon.bat 2` 一键启动 Clash Verge、自动选线和定时采集，详见 [Windows 一键启动](#windows-一键启动)。
 
@@ -287,6 +290,7 @@ sources:
       - clash node free
       - vless free
     max_results: 30
+    max_collect_nodes: 5000
     token: null          # GitHub 代码搜索需要 token
 
   web_scrape:
@@ -330,7 +334,7 @@ server:
 
 logging:
   level: INFO            # DEBUG / INFO / WARNING / ERROR
-  file: null             # null = 输出到控制台
+  file: ./logs/fns.log   # 日志文件路径
 ```
 
 ### 字段参考
@@ -340,6 +344,7 @@ logging:
 | `sources.github.enabled` | bool | `true` | 启用 GitHub 代码搜索 |
 | `sources.github.search_queries` | list | 4 条英文默认词 | 搜索关键词 |
 | `sources.github.max_results` | int | `30` | 每个关键词最多返回的 README 数 |
+| `sources.github.max_collect_nodes` | int | `5000` | GitHub 采集/解析后保留的节点上限 |
 | `sources.github.token` | str / null | `null` | GitHub 经典 token，解除搜索速率限制 |
 | `sources.web_scrape.enabled` | bool | `true` | 启用网页抓取 |
 | `sources.web_scrape.urls` | list | `[]` | 要抓取的 HTML 页面 |
@@ -362,7 +367,7 @@ logging:
 | `server.host` | str | `0.0.0.0` | HTTP 监听地址 |
 | `server.port` | int | `5000` | HTTP 监听端口 |
 | `logging.level` | str | `INFO` | 日志级别 |
-| `logging.file` | str / null | `null` | 日志文件路径 |
+| `logging.file` | str / null | `logs/fns.log` | 日志文件路径 |
 
 注意：配置文件使用 snake_case 字段名，例如 `allow_lan`、`log_level`。写成 `allow-lan` 或 `log-level` 会被忽略，保持默认值。
 
@@ -389,8 +394,8 @@ logging:
 ### 验证
 
 - 所有节点先做快速 TCP 预筛，不可达节点直接跳过完整协议测试
-- HTTP / SOCKS5 / SS / Trojan 使用 aiohttp / pproxy 做真实代理请求
-- VMess / VLESS / Hysteria2 / TUIC 使用 mihomo 子进程验证；未安装 mihomo 时标记为不可用
+- HTTP / SOCKS5 使用 aiohttp 做真实代理请求
+- SS / Trojan / VMess / VLESS / Hysteria2 / TUIC 使用 mihomo 子进程验证；未安装 mihomo 时 SS / Trojan 回退 pproxy，其余标记为不可用
 - 验证结果写入 `output/fns.cache.json`，30 分钟内复用
 
 ### 增量更新
@@ -399,7 +404,7 @@ logging:
 
 1. 加载上次输出并读取验证缓存
 2. 存活节点足够时直接输出，跳过采集
-3. 不足时按 3 倍差额收集候选池，验证后选择延迟最低的节点补足
+3. 不足时继续采集并验证新节点，达到目标数量后立即停止
 
 ## 输出与 HTTP 服务
 

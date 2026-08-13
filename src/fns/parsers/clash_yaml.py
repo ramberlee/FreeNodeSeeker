@@ -77,23 +77,30 @@ class ClashYamlParser(BaseParser):
             logger.debug(f"Unknown Clash proxy type: {proxy_type_str}")
             return None
 
+        reality_opts = proxy.get("reality-opts")
+        reality_opts_dict = reality_opts if isinstance(reality_opts, dict) else {}
         node = ProxyNode(
             node_type=proxy_type,
             address=str(proxy.get("server", "")),
             port=int(proxy.get("port", 0)),
             uuid=proxy.get("uuid", ""),
             password=proxy.get("password", ""),
+            username=proxy.get("username", ""),
             method=proxy.get("cipher", proxy.get("method", "")),
             encryption=proxy.get("cipher", proxy.get("encryption", "")),
             flow=proxy.get("flow", ""),
+            plugin=proxy.get("plugin", ""),
+            plugin_opts=_get_plugin_opts(proxy),
+            grpc_service_name=_get_grpc_service_name(proxy),
             transport=proxy.get("network", "tcp"),
             ws_path=_get_ws_opts_path(proxy),
             ws_host=_get_ws_opts_host(proxy),
             tls=proxy.get("tls", False) is True or str(proxy.get("tls", "")).lower() == "true",
             sni=proxy.get("servername", proxy.get("sni", "")),
+            skip_cert_verify=_as_bool(proxy.get("skip-cert-verify", False)),
             fingerprint=proxy.get("client-fingerprint", proxy.get("fp", "")),
-            public_key=proxy.get("reality-opts", {}).get("public-key", "") if isinstance(proxy.get("reality-opts"), dict) else "",
-            short_id=proxy.get("reality-opts", {}).get("short-id", "") if isinstance(proxy.get("reality-opts"), dict) else "",
+            public_key=reality_opts_dict.get("public-key", ""),
+            short_id=reality_opts_dict.get("short-id", ""),
             obfs=proxy.get("obfs", ""),
             obfs_password=proxy.get("obfs-password", ""),
             up_speed=proxy.get("up", proxy.get("up-speed")),
@@ -120,3 +127,32 @@ def _get_ws_opts_host(proxy: dict) -> str | None:
         if isinstance(hdrs, dict):
             return hdrs.get("Host")
     return None
+
+
+def _get_grpc_service_name(proxy: dict) -> str | None:
+    opts = proxy.get("grpc-opts")
+    if isinstance(opts, dict):
+        return opts.get("grpc-service-name", "")
+    return None
+
+
+def _get_plugin_opts(proxy: dict) -> dict | None:
+    opts = proxy.get("plugin-opts")
+    if isinstance(opts, dict):
+        return opts
+    if isinstance(opts, str):
+        parsed: dict = {}
+        for part in opts.split(";"):
+            if not part:
+                continue
+            if "=" in part:
+                key, _, value = part.partition("=")
+                parsed[key.strip()] = value
+            else:
+                parsed[part.strip()] = True
+        return parsed or None
+    return None
+
+
+def _as_bool(value: object) -> bool:
+    return value is True or str(value).lower() in ("true", "1", "yes")

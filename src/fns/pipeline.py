@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -30,6 +31,9 @@ logger = logging.getLogger("fns")
 _VALIDATION_CACHE_TTL = 1800  # 30 minutes
 _VALIDATION_CACHE_FILE = "fns.cache.json"
 _VALIDATION_CACHE_VERSION = 2
+_COLLECTED_NODES_FILE = "fns.collected.jsonl"
+_VALIDATION_REPORT_FILE = "fns.validation_report.json"
+_STATE_FILE = "fns.state.json"
 
 _PARSE_CHUNK_LINES = 20_000
 _URI_PREFIXES = ("vmess://", "vless://", "ss://", "trojan://", "hysteria2://", "hy2://", "tuic://")
@@ -51,6 +55,111 @@ def _split_parse_chunks(raw: RawContent) -> list[str]:
         "\n".join(lines[i : i + _PARSE_CHUNK_LINES])
         for i in range(0, len(lines), _PARSE_CHUNK_LINES)
     ]
+
+
+def _node_to_record(node: ProxyNode, collector: str | None = None) -> dict:
+    """Convert a node to a flat, JSON-serializable diagnostic record."""
+    return {
+        "node_type": node.node_type.value,
+        "address": node.address,
+        "port": node.port,
+        "uuid": node.uuid,
+        "password": node.password,
+        "username": node.username,
+        "method": node.method,
+        "encryption": node.encryption,
+        "flow": node.flow,
+        "plugin": node.plugin,
+        "plugin_opts": node.plugin_opts,
+        "grpc_service_name": node.grpc_service_name,
+        "transport": node.transport,
+        "ws_path": node.ws_path,
+        "ws_host": node.ws_host,
+        "tls": node.tls,
+        "skip_cert_verify": node.skip_cert_verify,
+        "sni": node.sni,
+        "fingerprint": node.fingerprint,
+        "public_key": node.public_key,
+        "short_id": node.short_id,
+        "obfs": node.obfs,
+        "obfs_password": node.obfs_password,
+        "up_speed": node.up_speed,
+        "down_speed": node.down_speed,
+        "congestion_control": node.congestion_control,
+        "udp_relay_mode": node.udp_relay_mode,
+        "latency_ms": node.latency_ms,
+        "is_alive": node.is_alive,
+        "validation_error": node.validation_error,
+        "source": node.source,
+        "collector": collector,
+        "remark": node.remark,
+    }
+
+
+def _write_collected_nodes(output_dir: Path, source_nodes: dict[str, list]) -> None:
+    """Persist every parsed node before dedup/validation for later analysis."""
+    path = output_dir / _COLLECTED_NODES_FILE
+    collected_at = time.time()
+    try:
+        with path.open("w", encoding="utf-8") as f:
+            for collector_name, nodes in source_nodes.items():
+                for node in nodes:
+                    record = _node_to_record(node, collector_name)
+                    record["collected_at"] = collected_at
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        logger.info(f"Wrote collected node snapshot to {path}")
+    except Exception as e:
+        logger.warning(f"Failed to write collected node snapshot: {e}")
+
+
+def _write_validation_report(
+    output_dir: Path,
+    *,
+    collected_total: int,
+    unique_candidates: int,
+    validated_nodes: list[ProxyNode],
+    alive_new: int,
+    alive_final: int,
+    errors: list[str],
+) -> None:
+    """Write a human-readable summary plus per-reason dead-node counts."""
+    path = output_dir / _VALIDATION_REPORT_FILE
+    alive_validated = sum(1 for n in validated_nodes if n.is_alive)
+    dead_validated = len(validated_nodes) - alive_validated
+    by_protocol: dict[str, dict[str, int]] = {}
+    for n in validated_nodes:
+        bucket = by_protocol.setdefault(
+            n.node_type.value, {"alive": 0, "dead": 0}
+        )
+        if n.is_alive:
+            bucket["alive"] += 1
+        else:
+            bucket["dead"] += 1
+
+    error_counts = Counter(
+        n.validation_error or "unknown" for n in validated_nodes if not n.is_alive
+    )
+    report = {
+        "generated_at": time.time(),
+        "collected_total": collected_total,
+        "unique_candidates": unique_candidates,
+        "validated_total": len(validated_nodes),
+        "alive_validated": alive_validated,
+        "dead_validated": dead_validated,
+        "alive_new": alive_new,
+        "alive_final": alive_final,
+        "by_protocol": by_protocol,
+        "dead_by_reason": dict(error_counts),
+        "errors": errors,
+    }
+    try:
+        path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info(f"Wrote validation report to {path}")
+    except Exception as e:
+        logger.warning(f"Failed to write validation report: {e}")
 
 
 def _load_validation_cache(output_dir: Path) -> dict[tuple, tuple[bool, float, float]]:
@@ -88,8 +197,10 @@ def _save_validation_cache(
 
 
 def load_existing_nodes(output_dir: Path) -> list[ProxyNode]:
-    """Load previously saved nodes from fns.json."""
-    json_path = output_dir / "fns.json"
+    """Load previously saved nodes from the internal state file."""
+    json_path = output_dir / _STATE_FILE
+    if not json_path.exists():
+        json_path = output_dir / "fns.json"
     if not json_path.exists():
         logger.info("No existing nodes found")
         return []
@@ -109,13 +220,18 @@ def load_existing_nodes(output_dir: Path) -> list[ProxyNode]:
                 port=item.get("port", 0),
                 uuid=item.get("uuid", ""),
                 password=item.get("password", ""),
+                username=item.get("username"),
                 method=item.get("method", ""),
                 encryption=item.get("encryption", ""),
                 flow=item.get("flow", ""),
+                plugin=item.get("plugin"),
+                plugin_opts=item.get("plugin_opts"),
+                grpc_service_name=item.get("grpc_service_name"),
                 transport=item.get("transport", ""),
                 ws_path=item.get("ws_path", ""),
                 ws_host=item.get("ws_host", ""),
                 tls=item.get("tls", False),
+                skip_cert_verify=bool(item.get("skip_cert_verify", False)),
                 sni=item.get("sni", ""),
                 fingerprint=item.get("fingerprint", ""),
                 public_key=item.get("public_key", ""),
@@ -126,6 +242,9 @@ def load_existing_nodes(output_dir: Path) -> list[ProxyNode]:
                 down_speed=item.get("down_speed"),
                 congestion_control=item.get("congestion_control", ""),
                 udp_relay_mode=item.get("udp_relay_mode", ""),
+                latency_ms=item.get("latency_ms"),
+                is_alive=bool(item.get("is_alive", False)),
+                validation_error=item.get("validation_error"),
                 source=item.get("source", ""),
                 remark=item.get("remark", ""),
             )
@@ -329,35 +448,50 @@ async def run_pipeline(
         if result.errors:
             errors.extend(result.errors)
 
+    github_nodes = source_nodes.get("github")
+    if github_nodes and len(github_nodes) > cfg.sources.github.max_collect_nodes:
+        logger.info(
+            f"Capping parsed GitHub nodes from {len(github_nodes)} "
+            f"to {cfg.sources.github.max_collect_nodes}"
+        )
+        source_nodes["github"] = github_nodes[: cfg.sources.github.max_collect_nodes]
+
     total_parsed = sum(len(v) for v in source_nodes.values())
     logger.info(f"Parsed {total_parsed} nodes from {len(source_nodes)} sources")
+    _write_collected_nodes(output_dir, source_nodes)
 
     # ── 3. Merge ───────────────────────────────────────────────────────────
 
     source_priority = [c.name for c in collectors if c.name in source_nodes]
     new_nodes = merge_sources(source_nodes, source_priority=source_priority)
+    unique_candidate_count = len(new_nodes)
     logger.info(f"Merged to {len(new_nodes)} unique new nodes")
 
     # ── 4. Validate new nodes ──────────────────────────────────────────────
 
+    validated_nodes: list[ProxyNode] = []
     if skip_validation:
         for n in new_nodes:
             n.is_alive = True
+            n.validation_error = None
+        validated_nodes = list(new_nodes)
     else:
         validator = TcpValidator(cfg.validator)
 
         if effective_max > 0:
-            # Validate in concurrent batches. Over-collect 3x target pool so
-            # we can pick the lowest-latency nodes, not just the first alive.
+            # Validate in concurrent batches, stopping as soon as the target
+            # is reached. The first usable candidates are good enough when the
+            # pool contains tens of thousands of nodes.
             new_alive: list[ProxyNode] = []
             remaining = effective_max - len(existing_alive)
-            pool_target = min(remaining * 3, len(new_nodes))
+            pool_target = min(remaining, len(new_nodes))
             batch_size = cfg.validator.concurrency
             for i in range(0, len(new_nodes), batch_size):
                 if len(new_alive) >= pool_target:
                     break
                 batch = new_nodes[i:i + batch_size]
                 await validator.validate_all(batch)
+                validated_nodes.extend(batch)
                 for node in batch:
                     if node.is_alive:
                         new_alive.append(node)
@@ -375,13 +509,14 @@ async def run_pipeline(
             )
         else:
             await validator.validate_all(new_nodes)
+            validated_nodes = list(new_nodes)
 
     alive_new = sum(1 for n in new_nodes if n.is_alive)
     logger.info(f"New nodes validation: {alive_new}/{len(new_nodes)} alive")
 
     # 更新验证缓存（新节点）
     now = time.time()
-    for n in new_nodes:
+    for n in validated_nodes:
         validation_cache[(n.address, n.port, n.node_type.value)] = (
             n.is_alive, n.latency_ms, now,
         )
@@ -399,6 +534,15 @@ async def run_pipeline(
     logger.info(
         f"Final: {alive_count} alive nodes "
         f"(from {len(existing_alive)} existing + {len(new_alive_nodes)} new)"
+    )
+    _write_validation_report(
+        output_dir,
+        collected_total=total_parsed,
+        unique_candidates=unique_candidate_count,
+        validated_nodes=validated_nodes,
+        alive_new=len(new_alive_nodes),
+        alive_final=alive_count,
+        errors=errors,
     )
 
     # ── 6. Output ──────────────────────────────────────────────────────────
@@ -444,3 +588,14 @@ def _write_outputs(
             msg = f"Output error for format '{fmt}': {e}"
             logger.error(msg)
             errors.append(msg)
+
+    try:
+        from fns.formatters.json_output import format_json
+        (output_dir / _STATE_FILE).write_text(
+            format_json(nodes), encoding="utf-8"
+        )
+        logger.info(f"Wrote internal state to {output_dir / _STATE_FILE}")
+    except Exception as e:
+        msg = f"Output error for internal state: {e}"
+        logger.error(msg)
+        errors.append(msg)

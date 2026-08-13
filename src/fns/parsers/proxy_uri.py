@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote
 
 from fns.models import ProxyNode, ProxyType
 from fns.parsers.base import BaseParser, ParseResult
@@ -53,7 +53,11 @@ class ProxyUriParser(BaseParser):
 
     @staticmethod
     def can_parse(text: str) -> bool:
-        return any(PROTO_RE.match(line.strip()) for line in text.strip().splitlines() if line.strip())
+        return any(
+            PROTO_RE.match(line.strip())
+            for line in text.strip().splitlines()
+            if line.strip()
+        )
 
     def parse(self, text: str, source: str = "", pre_parsed: object = None) -> ParseResult:
         result = ParseResult(format_detected="proxy_uri")
@@ -151,6 +155,12 @@ class ProxyUriParser(BaseParser):
             ws_path=_first(params, "path", ""),
             ws_host=_first(params, "host", ""),
             tls=tls,
+            skip_cert_verify=_truthy(_first(params, "allowInsecure", "")) or _truthy(
+                _first(params, "insecure", "")
+            ),
+            grpc_service_name=_first(params, "serviceName", "") or _first(
+                params, "grpc-service-name", ""
+            ),
             sni=_first(params, "sni", ""),
             fingerprint=_first(params, "fp", ""),
             public_key=_first(params, "pbk", ""),
@@ -165,7 +175,8 @@ class ProxyUriParser(BaseParser):
     def _parse_ss(self, uri: str, source: str) -> ProxyNode | None:
         inner = uri[len("ss://"):]
 
-        # SIP002: ss://base64(method:password)@host:port#remark
+        # SIP002: ss://base64(method:password)@host:port?plugin=...#remark
+        qs = ""
         if "@" in inner:
             userinfo_b64, rest = inner.split("@", 1)
             userinfo = safe_b64decode(userinfo_b64).decode("utf-8", errors="replace")
@@ -181,6 +192,7 @@ class ProxyUriParser(BaseParser):
                 host_port = rest
                 remark = ""
 
+            host_port, qs = _split_ss_query(host_port)
             host_port = host_port.rstrip("/")
             if ":" in host_port:
                 host, port_str = host_port.rsplit(":", 1)
@@ -195,12 +207,17 @@ class ProxyUriParser(BaseParser):
             host, port_str = hpp.rsplit(":", 1)
             host, port, remark = host, int(port_str), ""
 
+        params = parse_qs(qs) if qs else {}
+        plugin, plugin_opts = _parse_ss_plugin(_first(params, "plugin", ""))
+
         return ProxyNode(
             node_type=ProxyType.SS,
             address=host,
             port=port,
             password=password,
             method=method,
+            plugin=plugin,
+            plugin_opts=plugin_opts,
             source=source,
             remark=remark,
         )
@@ -227,6 +244,9 @@ class ProxyUriParser(BaseParser):
 
         params = parse_qs(qs) if qs else {}
         security = _first(params, "security", "tls")
+        insecure = _truthy(_first(params, "allowInsecure", "")) or _truthy(
+            _first(params, "insecure", "")
+        )
 
         return ProxyNode(
             node_type=ProxyType.TROJAN,
@@ -236,7 +256,11 @@ class ProxyUriParser(BaseParser):
             transport=_first(params, "type", "tcp"),
             ws_path=_first(params, "path", ""),
             ws_host=_first(params, "host", ""),
+            grpc_service_name=_first(params, "serviceName", "") or _first(
+                params, "grpc-service-name", ""
+            ),
             tls=security == "tls",
+            skip_cert_verify=insecure or security != "tls",
             sni=_first(params, "sni", ""),
             fingerprint=_first(params, "fp", ""),
             source=source,
@@ -272,8 +296,10 @@ class ProxyUriParser(BaseParser):
         params = parse_qs(qs) if qs else {}
         if not password:
             password = _first(params, "auth", "")
-        insecure = _first(params, "insecure", "")
-        tls = insecure != "1"
+        insecure = _truthy(_first(params, "insecure", "")) or _truthy(
+            _first(params, "allowInsecure", "")
+        )
+        tls = not insecure
 
         return ProxyNode(
             node_type=ProxyType.HYSTERIA2,
@@ -281,6 +307,7 @@ class ProxyUriParser(BaseParser):
             port=port,
             password=password,
             tls=tls,
+            skip_cert_verify=insecure,
             sni=_first(params, "sni", ""),
             obfs=_first(params, "obfs", ""),
             obfs_password=_first(params, "obfs-password", ""),
@@ -315,6 +342,9 @@ class ProxyUriParser(BaseParser):
             host, port = host_port, 443
 
         params = parse_qs(qs) if qs else {}
+        insecure = _truthy(_first(params, "insecure", "")) or _truthy(
+            _first(params, "allowInsecure", "")
+        )
 
         return ProxyNode(
             node_type=ProxyType.TUIC,
@@ -322,7 +352,8 @@ class ProxyUriParser(BaseParser):
             port=port,
             uuid=uuid,
             password=password,
-            tls=True,
+            tls=not insecure,
+            skip_cert_verify=insecure,
             sni=_first(params, "sni", ""),
             congestion_control=_first(params, "congestion_control", ""),
             udp_relay_mode=_first(params, "udp_relay_mode", ""),
@@ -341,3 +372,31 @@ def _int_or_none(s: str) -> int | None:
         return int(s)
     except (ValueError, TypeError):
         return None
+
+
+def _split_ss_query(host_port: str) -> tuple[str, str]:
+    """Split a SIP002 host:port into (host_port, query), tolerating `/?`."""
+    if "/?" in host_port:
+        host_port, _, qs = host_port.partition("/?")
+    else:
+        host_port, _, qs = host_port.partition("?")
+    return host_port, qs
+
+
+def _parse_ss_plugin(plugin_param: str) -> tuple[str | None, dict | None]:
+    """Parse a SIP002 plugin value into a plugin name and option dict."""
+    parts = [p for p in plugin_param.split(";") if p.strip()]
+    if not parts:
+        return None, None
+    opts: dict = {}
+    for part in parts[1:]:
+        if "=" in part:
+            key, _, value = part.partition("=")
+            opts[key.strip()] = value
+        else:
+            opts[part.strip()] = True
+    return parts[0].strip(), opts or None
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}

@@ -47,6 +47,31 @@ class TestProxyUriParser:
         assert n.method == "aes-256-gcm"
         assert n.remark == "Test-SS"
 
+    def test_ss_plugin(self):
+        uri = (
+            "ss://YWVzLTI1Ni1nY206dGVzdDEyMw==@5.6.7.8:8388/"
+            "?plugin=v2ray-plugin%3Btls%3Bmode%3Dwebsocket"
+            "%3Bhost%3Dexample.com%3Bpath%3D%2Fws#Test-SS-Plugin"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.SS
+        assert n.address == "5.6.7.8"
+        assert n.port == 8388
+        assert n.password == "test123"
+        assert n.method == "aes-256-gcm"
+        assert n.plugin == "v2ray-plugin"
+        assert n.plugin_opts == {
+            "tls": True,
+            "mode": "websocket",
+            "host": "example.com",
+            "path": "/ws",
+        }
+        assert n.remark == "Test-SS-Plugin"
+
     def test_trojan(self):
         uri = "trojan://trojan-password@trojan.example.com:443?security=tls&type=tcp&sni=trojan.example.com#Test-Trojan"
         parser = ProxyUriParser()
@@ -60,6 +85,59 @@ class TestProxyUriParser:
         assert n.password == "trojan-password"
         assert n.tls is True
         assert n.sni == "trojan.example.com"
+
+    def test_trojan_grpc_insecure(self):
+        uri = (
+            "trojan://trojan-password@trojan.example.com:443?"
+            "security=tls&type=grpc&serviceName=example-service"
+            "&allowInsecure=1&sni=trojan.example.com#Test-Trojan-GRPC"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.TROJAN
+        assert n.transport == "grpc"
+        assert n.grpc_service_name == "example-service"
+        assert n.tls is True
+        assert n.skip_cert_verify is True
+        assert n.sni == "trojan.example.com"
+
+    def test_trojan_ws(self):
+        uri = (
+            "trojan://trojan-password@trojan.example.com:443?"
+            "security=tls&type=ws&path=%2Fws&host=ws.example.com#Test-Trojan-WS"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.TROJAN
+        assert n.transport == "ws"
+        assert n.ws_path == "/ws"
+        assert n.ws_host == "ws.example.com"
+        assert n.tls is True
+
+    def test_tuic_insecure(self):
+        uri = (
+            "tuic://b831381d-6324-4d53-ad4f-8cda48b30811:tuic-pass@"
+            "tuic.example.com:443?sni=tuic.example.com&insecure=1"
+            "&congestion_control=bbr#Test-TUIC-Insecure"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.TUIC
+        assert n.uuid == "b831381d-6324-4d53-ad4f-8cda48b30811"
+        assert n.password == "tuic-pass"
+        assert n.tls is False
+        assert n.skip_cert_verify is True
+        assert n.sni == "tuic.example.com"
+        assert n.congestion_control == "bbr"
 
     def test_multi_uri(self):
         parser = ProxyUriParser()
@@ -91,6 +169,56 @@ class TestClashYamlParser:
         assert n.address == "1.1.1.1"
         assert n.port == 443
         assert n.uuid == "test-uuid"
+
+    def test_parse_extra_fields(self):
+        text = """proxies:
+  - name: SS Plugin
+    type: ss
+    server: 1.1.1.1
+    port: 8388
+    cipher: aes-256-gcm
+    password: pwd
+    plugin: v2ray-plugin
+    plugin-opts:
+      mode: websocket
+      tls: true
+      host: example.com
+      path: /ws
+  - name: HTTP Auth
+    type: http
+    server: 2.2.2.2
+    port: 8080
+    username: user
+    password: pass
+  - name: Trojan GRPC
+    type: trojan
+    server: 3.3.3.3
+    port: 443
+    password: pw
+    network: grpc
+    grpc-opts:
+      grpc-service-name: svc
+    skip-cert-verify: true
+"""
+        parser = ClashYamlParser()
+        result = parser.parse(text, "test")
+
+        assert len(result.nodes) == 3
+        ss = result.nodes[0]
+        assert ss.plugin == "v2ray-plugin"
+        assert ss.plugin_opts == {
+            "mode": "websocket",
+            "tls": True,
+            "host": "example.com",
+            "path": "/ws",
+        }
+        http = result.nodes[1]
+        assert http.username == "user"
+        assert http.password == "pass"
+        trojan = result.nodes[2]
+        assert trojan.transport == "grpc"
+        assert trojan.grpc_service_name == "svc"
+        assert trojan.skip_cert_verify is True
 
     def test_can_parse(self):
         assert ClashYamlParser.can_parse(

@@ -12,6 +12,7 @@ sources:
       - vless free
       # - v2ray节点
     max_results: 30
+    max_collect_nodes: 5000
     # GitHub now REQUIRES authentication for code search.
     # Create a classic token (no scopes needed) at https://github.com/settings/tokens
     token: null  # "ghp_xxxxxxxxxxxx"
@@ -66,4 +67,4 @@ server:
 # --- Logging ---
 logging:
   level: INFO
-  file: null  # "./logs/fns.log"
+  file: ./logs/fns.log

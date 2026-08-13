@@ -135,6 +135,12 @@ def _build_mihomo_config(node: ProxyNode, listen_port: int) -> dict:
     }
 
 
+def _write_mihomo_config(config: dict, config_path: str) -> None:
+    """Write mihomo config as UTF-8 JSON without escaping non-ASCII names."""
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+
 async def _wait_for_port(port: int, timeout: float) -> bool:
     """Poll a local TCP port until it accepts connections."""
     deadline = time.monotonic() + timeout
@@ -173,9 +179,9 @@ async def _validate_via_mihomo(
     config = _build_mihomo_config(node, port)
     work_dir = tempfile.mkdtemp(prefix="fns-mihomo-")
     config_path = os.path.join(work_dir, "config.json")
+    stderr_tail = b""
     try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
+        _write_mihomo_config(config, config_path)
 
         proc = await asyncio.create_subprocess_exec(
             binary,
@@ -184,11 +190,11 @@ async def _validate_via_mihomo(
             "-d",
             work_dir,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
 
         try:
-            if not await _wait_for_port(port, min(timeout * 0.3, 2.0)):
+            if not await _wait_for_port(port, min(timeout, 3.0)):
                 return False, None
 
             start = time.monotonic()
@@ -230,9 +236,20 @@ async def _validate_via_mihomo(
                     proc.kill()
                 except ProcessLookupError:
                     pass
+            if proc.stderr is not None:
+                try:
+                    stderr_tail = (
+                        await asyncio.wait_for(proc.stderr.read(), timeout=1.0)
+                    )[-1000:]
+                except Exception:
+                    pass
     finally:
+        if stderr_tail:
+            logger.debug(
+                f"mihomo stderr for {node.node_type.value}://{node.address}:{node.port}: "
+                f"{stderr_tail[-500:]!r}"
+            )
         shutil.rmtree(work_dir, ignore_errors=True)
-
     return False, None
 
 
@@ -245,8 +262,7 @@ class TcpValidator:
     Routes to the appropriate protocol handler:
       HTTP    → aiohttp native proxy
       SOCKS5  → aiohttp-socks ProxyConnector
-      SS      → pproxy Connection
-      Trojan  → pproxy Connection (pure Python)
+      SS/Trojan → mihomo subprocess (pproxy fallback without mihomo)
       VMess/VLESS/Hysteria2/TUIC → mihomo subprocess (no TCP fallback)
     """
 
@@ -294,7 +310,7 @@ class TcpValidator:
         complex_nodes: list[ProxyNode] = []
 
         for n in nodes:
-            if n.node_type in (ProxyType.HTTP, ProxyType.SOCKS5, ProxyType.SS, ProxyType.TROJAN):
+            if n.node_type in (ProxyType.HTTP, ProxyType.SOCKS5):
                 simple_nodes.append(n)
             else:
                 complex_nodes.append(n)
@@ -319,15 +335,17 @@ class TcpValidator:
             f"(concurrency={self.concurrency}, timeout={self.timeout}s)..."
         )
         done = 0
+        alive_count = 0
         log_every = max(1, total // 10) if total else 1
 
         async def _validate_one_count(node: ProxyNode) -> ProxyNode:
-            nonlocal done
+            nonlocal done, alive_count
             result = await self._validate_with_sem(node)
             done += 1
+            if result.is_alive:
+                alive_count += 1
             if done % log_every == 0 or done == total:
-                alive_so_far = sum(1 for n in all_candidates[:done] if n.is_alive)
-                logger.info(f"  Progress: {done}/{total} checked, {alive_so_far} alive so far")
+                logger.info(f"  Progress: {done}/{total} checked, {alive_count} alive so far")
             return result
 
         try:
@@ -351,9 +369,11 @@ class TcpValidator:
         async def _check_one(node: ProxyNode) -> ProxyNode | None:
             async with tcp_sem:
                 if await self._quick_tcp_check(node):
+                    node.validation_error = None
                     return node
                 node.is_alive = False
                 node.latency_ms = None
+                node.validation_error = "tcp_unreachable"
                 return None
 
         results = await asyncio.gather(*[_check_one(n) for n in nodes])
@@ -369,6 +389,23 @@ class TcpValidator:
             return await self._validate_node(node)
 
     async def _validate_node(self, node: ProxyNode) -> ProxyNode:
+        # SS/Trojan get full protocol validation through mihomo when available;
+        # fall back to pproxy only when mihomo is missing.
+        if _find_mihomo():
+            if node.node_type in (ProxyType.SS, ProxyType.TROJAN):
+                return await self._try_mihomo(node)
+            handlers = {
+                ProxyType.HTTP: self._try_http,
+                ProxyType.SOCKS5: self._try_socks5,
+            }
+            handler = handlers.get(node.node_type)
+            if handler:
+                return await handler(node)
+
+            # VMess, VLESS, Hysteria2, TUIC: TCP pre-filter already done in validate_all,
+            # go straight to full protocol validation.
+            return await self._try_mihomo(node)
+
         handlers = {
             ProxyType.HTTP: self._try_http,
             ProxyType.SOCKS5: self._try_socks5,
@@ -379,16 +416,13 @@ class TcpValidator:
         if handler:
             return await handler(node)
 
-        # VMess, VLESS, Hysteria2, TUIC: TCP pre-filter already done in validate_all,
-        # go straight to full protocol validation.
-        if _find_mihomo():
-            return await self._try_mihomo(node)
         logger.warning(
             f"No mihomo available; marking {node.node_type.value}://"
             f"{node.address}:{node.port} dead instead of using a TCP-only check"
         )
         node.is_alive = False
         node.latency_ms = None
+        node.validation_error = "mihomo_not_available"
         return node
 
     async def _quick_tcp_check(self, node: ProxyNode) -> bool:
@@ -412,21 +446,28 @@ class TcpValidator:
     async def _try_http(self, node: ProxyNode) -> ProxyNode:
         proxy_url = f"http://{node.address}:{node.port}"
         session = await self._get_session()
+        username = getattr(node, "username", None)
+        proxy_auth = None
+        if username or node.password:
+            proxy_auth = aiohttp.BasicAuth(username or "", node.password or "")
         for attempt in range(self.retries + 1):
             try:
                 start = time.monotonic()
                 async with session.get(
                     self.test_url,
                     proxy=proxy_url,
+                    proxy_auth=proxy_auth,
                     allow_redirects=False,
                     timeout=aiohttp.ClientTimeout(total=self.timeout),
                 ) as resp:
                     if not _is_success_status(resp.status):
+                        node.validation_error = f"http_status_{resp.status}"
                         return node
                     await resp.read()
                 elapsed = (time.monotonic() - start) * 1000
                 node.latency_ms = round(elapsed, 1)
                 node.is_alive = True
+                node.validation_error = None
                 return node
             except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
                 logger.debug(
@@ -441,6 +482,7 @@ class TcpValidator:
 
         node.is_alive = False
         node.latency_ms = None
+        node.validation_error = "http_request_failed"
         return node
 
     # ── SOCKS5 ──────────────────────────────────────────────────────────
@@ -472,11 +514,13 @@ class TcpValidator:
                         timeout=aiohttp.ClientTimeout(total=self.timeout),
                     ) as resp:
                         if not _is_success_status(resp.status):
+                            node.validation_error = f"socks5_status_{resp.status}"
                             return node  # proxy returned error
                         await resp.read()
                     elapsed = (time.monotonic() - start) * 1000
                     node.latency_ms = round(elapsed, 1)
                     node.is_alive = True
+                    node.validation_error = None
                     return node
                 except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
                     logger.debug(
@@ -491,6 +535,7 @@ class TcpValidator:
 
         node.is_alive = False
         node.latency_ms = None
+        node.validation_error = "socks5_request_failed"
         return node
 
     # ── Shadowsocks ─────────────────────────────────────────────────────
@@ -527,6 +572,7 @@ class TcpValidator:
                     elapsed = (time.monotonic() - start) * 1000
                     node.latency_ms = round(elapsed, 1)
                     node.is_alive = True
+                    node.validation_error = None
                     return node
             except (asyncio.TimeoutError, OSError, ConnectionError) as e:
                 logger.debug(
@@ -541,6 +587,7 @@ class TcpValidator:
 
         node.is_alive = False
         node.latency_ms = None
+        node.validation_error = "ss_request_failed"
         return node
 
     # ── Trojan ──────────────────────────────────────────────────────────
@@ -574,6 +621,7 @@ class TcpValidator:
                     elapsed = (time.monotonic() - start) * 1000
                     node.latency_ms = round(elapsed, 1)
                     node.is_alive = True
+                    node.validation_error = None
                     return node
             except (asyncio.TimeoutError, OSError, ConnectionError) as e:
                 logger.debug(
@@ -588,9 +636,10 @@ class TcpValidator:
 
         node.is_alive = False
         node.latency_ms = None
+        node.validation_error = "trojan_request_failed"
         return node
 
-    # ── mihomo (VMess / VLESS / Hysteria2 / TUIC) ───────────────────────
+    # ── mihomo (SS / Trojan / VMess / VLESS / Hysteria2 / TUIC) ────────
 
     async def _try_mihomo(self, node: ProxyNode) -> ProxyNode:
         async with self._mihomo_sem:
@@ -602,10 +651,12 @@ class TcpValidator:
                 if ok:
                     node.is_alive = True
                     node.latency_ms = lat
+                    node.validation_error = None
                     return node
 
         node.is_alive = False
         node.latency_ms = None
+        node.validation_error = "proxy_request_failed"
         return node
 
     # ── TCP fallback ────────────────────────────────────────────────────
@@ -626,6 +677,7 @@ class TcpValidator:
                 elapsed = (time.monotonic() - start) * 1000
                 node.latency_ms = round(elapsed, 1)
                 node.is_alive = True
+                node.validation_error = None
                 if attempt == 0:
                     logger.warning(
                         f"TCP-only validation for {node.node_type.value}://"

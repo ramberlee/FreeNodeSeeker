@@ -17,6 +17,7 @@ class GithubSourceConfig(BaseModel):
         "vless free",
     ])
     max_results: int = 30
+    max_collect_nodes: int = 5000
     token: str | None = None
 
 
@@ -82,7 +83,7 @@ class ServerConfig(BaseModel):
 
 class LoggingConfig(BaseModel):
     level: str = "INFO"
-    file: str | None = None
+    file: str = "logs/fns.log"
 
 
 # --- Top-level ---

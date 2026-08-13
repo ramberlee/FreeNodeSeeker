@@ -131,6 +131,9 @@ class GithubCollector(BaseCollector):
         results: list[RawContent] = []
         sem = asyncio.Semaphore(30)  # Concurrent README downloads
         link_sem = asyncio.Semaphore(80)
+        per_readme_limit = max(
+            1, self.config.max_collect_nodes // max(1, len(items))
+        )
         if seen_urls is None:
             seen_urls = set()
 
@@ -173,7 +176,10 @@ class GithubCollector(BaseCollector):
                         except Exception:
                             return None
 
-                fetched = await asyncio.gather(*[_fetch_one_link(url) for url in links])
+                link_budget = list(links)[:per_readme_limit]
+                fetched = await asyncio.gather(
+                    *[_fetch_one_link(url) for url in link_budget]
+                )
                 for result in fetched:
                     if isinstance(result, RawContent):
                         local_results.append(result)
@@ -184,7 +190,7 @@ class GithubCollector(BaseCollector):
                     line.strip()
                     for line in text.splitlines()
                     if URI_LINE_RE.match(line.strip())
-                ]
+                ][:per_readme_limit]
                 if lines:
                     local_results.append(RawContent(
                         text="\n".join(lines),
@@ -203,9 +209,17 @@ class GithubCollector(BaseCollector):
                         collector_name=self.name,
                         format_hint="base64",
                     ))
+                    if len(local_results) >= per_readme_limit:
+                        break
 
             results.extend(local_results)
 
         tasks = [process_readme(item) for item in items]
         await asyncio.gather(*tasks)
+        if len(results) > self.config.max_collect_nodes:
+            logger.info(
+                f"GitHub collector capped {len(results)} raw contents "
+                f"to {self.config.max_collect_nodes}"
+            )
+            results = results[: self.config.max_collect_nodes]
         return results

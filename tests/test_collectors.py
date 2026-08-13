@@ -143,6 +143,21 @@ async def test_github_deduplicates_linked_urls(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_github_limits_uri_lines_per_readme():
+    collector = GithubCollector(GithubSourceConfig(max_collect_nodes=3))
+    readme = "\n".join(f"vmess://node-{i}" for i in range(10))
+    item = {
+        "url": "https://api.github.com/repos/a/contents/README.md",
+        "html_url": "https://github.com/a",
+    }
+
+    results = await collector._fetch_contents(_FakeSession(readme), [item])
+
+    assert len(results) == 1
+    assert len([line for line in results[0].text.splitlines() if line.strip()]) == 3
+
+
+@pytest.mark.asyncio
 async def test_web_scraper_fetches_unique_links_once(monkeypatch):
     cfg = WebScrapeSourceConfig(urls=["https://example.com/page"], request_delay=0)
     collector = WebScraperCollector(cfg)
