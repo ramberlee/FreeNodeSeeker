@@ -105,7 +105,13 @@ mihomo -v
 
 ### GeoIP 数据库（可选）
 
-国别识别的 GeoIP 兜底需要本地 GeoLite2 Country 数据库，放到 `bin/geolite2-country.mmdb`，可从 [P3TERX/GeoLite.mmdb](https://github.com/P3TERX/GeoLite.mmdb/releases/latest) 下载。缺少数据库时，无法从节点名识别的节点会归入 `🏳️ 未标注`。
+国别识别的 GeoIP 兜底需要 `maxminddb` 依赖和本地 GeoLite2 Country 数据库。先安装依赖：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install maxminddb
+```
+
+再把 [P3TERX/GeoLite.mmdb](https://github.com/P3TERX/GeoLite.mmdb/releases/latest) 的 `GeoLite2-Country.mmdb` 放到 `bin/geolite2-country.mmdb`。缺少依赖或数据库时，无法从节点名识别的节点会归入 `🏳️ 未标注`。
 
 ## 命令行
 
