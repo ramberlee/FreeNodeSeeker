@@ -61,6 +61,51 @@ class TestProxyUriParser:
         assert n.port == 443
         assert n.remark == "Remark"
 
+    def test_vmess_raw_json(self):
+        payload = json.dumps(
+            {
+                "v": "2",
+                "ps": "Raw-JSON",
+                "add": "1.2.3.4",
+                "port": "443",
+                "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
+                "aid": "0",
+                "scy": "auto",
+                "net": "ws",
+                "host": "example.com",
+                "path": "/ws",
+                "tls": "tls",
+            }
+        )
+        uri = f"vmess://{payload}"
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.VMESS
+        assert n.address == "1.2.3.4"
+        assert n.port == 443
+        assert n.transport == "ws"
+        assert n.ws_path == "/ws"
+
+    def test_vmess_mislabeled_vless(self):
+        uri = (
+            "vmess://b831381d-6324-4d53-ad4f-8cda48b30811@vless.example.com:443/"
+            "?type=ws&amp;security=tls&amp;sni=vless.example.com#Mislabeled"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.VLESS
+        assert n.address == "vless.example.com"
+        assert n.port == 443
+        assert n.transport == "ws"
+        assert n.sni == "vless.example.com"
+        assert n.remark == "Mislabeled"
+
     def test_vless_trailing_slash(self):
         uri = (
             "vless://b831381d-6324-4d53-ad4f-8cda48b30811@vless.example.com:443/"
@@ -131,6 +176,21 @@ class TestProxyUriParser:
             "path": "/ws",
         }
         assert n.remark == "Test-SS-Plugin"
+
+    def test_ss_legacy_with_fragment(self):
+        payload = base64.b64encode(
+            b"aes-256-gcm:test123@5.6.7.8:8388"
+        ).decode()
+        uri = f"ss://{payload}#Legacy-Remark"
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.address == "5.6.7.8"
+        assert n.port == 8388
+        assert n.method == "aes-256-gcm"
+        assert n.remark == "Legacy-Remark"
 
     def test_trojan(self):
         uri = "trojan://trojan-password@trojan.example.com:443?security=tls&type=tcp&sni=trojan.example.com#Test-Trojan"

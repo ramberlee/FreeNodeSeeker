@@ -118,8 +118,8 @@ class GithubCollector(BaseCollector):
                 logger.warning(f"GitHub search returned HTTP {resp.status}: {err_body}")
                 return []
             data = await resp.json()
-        logger.debug(data)
         items = data.get("items", [])
+        logger.debug(f"GitHub search returned {len(items)} items")
         return items
 
     async def _fetch_contents(

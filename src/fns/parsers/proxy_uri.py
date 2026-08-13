@@ -4,6 +4,7 @@ Parse individual proxy URIs: vmess://, vless://, ss://, trojan://, hysteria2://,
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from urllib.parse import parse_qs, unquote
@@ -65,6 +66,7 @@ class ProxyUriParser(BaseParser):
             line = line.strip()
             if not line:
                 continue
+            line = html.unescape(line)
             try:
                 node = self._parse_line(line, source)
                 if node:
@@ -96,14 +98,23 @@ class ProxyUriParser(BaseParser):
     # ── VMess ───────────────────────────────────────────────────────────────
 
     def _parse_vmess(self, uri: str, source: str) -> ProxyNode | None:
-        encoded = uri[len("vmess://"):]
+        raw_encoded = uri[len("vmess://"):]
         fragment = ""
-        if "#" in encoded:
-            encoded, fragment = encoded.split("#", 1)
+        if "#" in raw_encoded:
+            raw_encoded, fragment = raw_encoded.split("#", 1)
+        encoded = raw_encoded
         if "?" in encoded:
             encoded = encoded.split("?", 1)[0]
-        decoded = safe_b64decode(encoded).decode("utf-8", errors="replace")
-        data = json.loads(decoded)
+        try:
+            data = json.loads(safe_b64decode(encoded).decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            try:
+                data = json.loads(encoded)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                fallback_uri = f"vless://{raw_encoded}"
+                if fragment:
+                    fallback_uri += f"#{fragment}"
+                return self._parse_vless(fallback_uri, source)
 
         node = ProxyNode(
             node_type=ProxyType.VMESS,
@@ -207,11 +218,17 @@ class ProxyUriParser(BaseParser):
                 host, port = host_port, 8388
         else:
             # Legacy: ss://base64(method:password@host:port)
-            decoded = safe_b64decode(inner).decode("utf-8", errors="replace")
+            legacy = inner
+            fragment = ""
+            if "#" in legacy:
+                legacy, fragment = legacy.split("#", 1)
+            legacy = legacy.split("?", 1)[0]
+            decoded = safe_b64decode(legacy).decode("utf-8", errors="replace")
             userinfo, hpp = decoded.rsplit("@", 1)
             method, password = userinfo.split(":", 1)
             host, port_str = hpp.rsplit(":", 1)
-            host, port, remark = host, int(port_str), ""
+            host, port = host, int(port_str)
+            remark = unquote(fragment)
 
         params = parse_qs(qs) if qs else {}
         plugin, plugin_opts = _parse_ss_plugin(_first(params, "plugin", ""))

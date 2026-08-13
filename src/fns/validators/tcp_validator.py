@@ -488,12 +488,14 @@ class TcpValidator:
                 return node
             except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
                 logger.debug(
-                    f"HTTP error via {node.address}:{node.port}: {e} "
+                    f"HTTP error via {node.address}:{node.port}: "
+                    f"{type(e).__name__}: {e} "
                     f"(attempt {attempt + 1})"
                 )
             except Exception as e:
                 logger.debug(
-                    f"Error via {node.address}:{node.port}: {e} "
+                    f"Error via {node.address}:{node.port}: "
+                    f"{type(e).__name__}: {e} "
                     f"(attempt {attempt + 1})"
                 )
 
@@ -541,12 +543,14 @@ class TcpValidator:
                     return node
                 except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
                     logger.debug(
-                        f"SOCKS5 error via {node.address}:{node.port}: {e} "
+                        f"SOCKS5 error via {node.address}:{node.port}: "
+                        f"{type(e).__name__}: {e} "
                         f"(attempt {attempt + 1})"
                     )
                 except Exception as e:
                     logger.debug(
-                        f"Error via {node.address}:{node.port}: {e} "
+                        f"Error via {node.address}:{node.port}: "
+                        f"{type(e).__name__}: {e} "
                         f"(attempt {attempt + 1})"
                     )
 
@@ -593,12 +597,14 @@ class TcpValidator:
                     return node
             except (asyncio.TimeoutError, OSError, ConnectionError) as e:
                 logger.debug(
-                    f"SS error via {node.address}:{node.port}: {e} "
+                    f"SS error via {node.address}:{node.port}: "
+                    f"{type(e).__name__}: {e} "
                     f"(attempt {attempt + 1})"
                 )
             except Exception as e:
                 logger.debug(
-                    f"Error via {node.address}:{node.port}: {e} "
+                    f"Error via {node.address}:{node.port}: "
+                    f"{type(e).__name__}: {e} "
                     f"(attempt {attempt + 1})"
                 )
 
@@ -642,12 +648,14 @@ class TcpValidator:
                     return node
             except (asyncio.TimeoutError, OSError, ConnectionError) as e:
                 logger.debug(
-                    f"Trojan error via {node.address}:{node.port}: {e} "
+                    f"Trojan error via {node.address}:{node.port}: "
+                    f"{type(e).__name__}: {e} "
                     f"(attempt {attempt + 1})"
                 )
             except Exception as e:
                 logger.debug(
-                    f"Error via {node.address}:{node.port}: {e} "
+                    f"Error via {node.address}:{node.port}: "
+                    f"{type(e).__name__}: {e} "
                     f"(attempt {attempt + 1})"
                 )
 
