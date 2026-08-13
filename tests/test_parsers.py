@@ -1,6 +1,7 @@
 """Test all parsers against fixtures."""
 
 import base64
+import json
 
 from fns.models import ProxyType
 from fns.parsers.base64_sub import Base64SubParser
@@ -32,6 +33,65 @@ class TestProxyUriParser:
         assert n.tls is True
         assert n.sni == "example.com"
         assert n.remark == "Test-VMess"
+
+    def test_vmess_with_remark_fragment(self):
+        payload = base64.b64encode(
+            json.dumps(
+                {
+                    "v": "2",
+                    "ps": "",
+                    "add": "1.2.3.4",
+                    "port": "443",
+                    "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
+                    "aid": "0",
+                    "scy": "auto",
+                    "net": "tcp",
+                }
+            ).encode()
+        ).decode()
+        uri = (
+            f"vmess://{payload}#Remark"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.address == "1.2.3.4"
+        assert n.port == 443
+        assert n.remark == "Remark"
+
+    def test_vless_trailing_slash(self):
+        uri = (
+            "vless://b831381d-6324-4d53-ad4f-8cda48b30811@vless.example.com:443/"
+            "?type=ws&security=tls&sni=vless.example.com#Test-VLESS"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.VLESS
+        assert n.address == "vless.example.com"
+        assert n.port == 443
+        assert n.transport == "ws"
+        assert n.remark == "Test-VLESS"
+
+    def test_hysteria2_trailing_slash(self):
+        uri = (
+            "hysteria2://hysteria-pass@hysteria.example.com:8443/"
+            "?sni=hysteria.example.com&insecure=1#Test-Hysteria2"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.HYSTERIA2
+        assert n.address == "hysteria.example.com"
+        assert n.port == 8443
+        assert n.skip_cert_verify is True
+        assert n.remark == "Test-Hysteria2"
 
     def test_ss(self):
         uri = "ss://YWVzLTI1Ni1nY206dGVzdDEyMw==@5.6.7.8:8388#Test-SS"

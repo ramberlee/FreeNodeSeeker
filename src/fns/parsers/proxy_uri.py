@@ -97,6 +97,11 @@ class ProxyUriParser(BaseParser):
 
     def _parse_vmess(self, uri: str, source: str) -> ProxyNode | None:
         encoded = uri[len("vmess://"):]
+        fragment = ""
+        if "#" in encoded:
+            encoded, fragment = encoded.split("#", 1)
+        if "?" in encoded:
+            encoded = encoded.split("?", 1)[0]
         decoded = safe_b64decode(encoded).decode("utf-8", errors="replace")
         data = json.loads(decoded)
 
@@ -114,7 +119,7 @@ class ProxyUriParser(BaseParser):
             sni=data.get("sni", ""),
             fingerprint=data.get("fp", ""),
             source=source,
-            remark=data.get("ps", ""),
+            remark=data.get("ps") or unquote(fragment),
         )
         return node
 
@@ -134,6 +139,7 @@ class ProxyUriParser(BaseParser):
         uuid = userinfo
 
         host_port, _, qs = rest.partition("?")
+        host_port = host_port.rstrip("/")
         if ":" in host_port:
             host, port_str = host_port.rsplit(":", 1)
             port = int(port_str)
@@ -235,6 +241,7 @@ class ProxyUriParser(BaseParser):
 
         password, rest = inner.split("@", 1)
         host_port, _, qs = rest.partition("?")
+        host_port = host_port.rstrip("/")
 
         if ":" in host_port:
             host, port_str = host_port.rsplit(":", 1)
@@ -287,6 +294,7 @@ class ProxyUriParser(BaseParser):
             password = ""
 
         host_port, _, qs = rest.partition("?")
+        host_port = host_port.rstrip("/")
         if ":" in host_port:
             host, port_str = host_port.rsplit(":", 1)
             port = int(port_str)
@@ -335,6 +343,7 @@ class ProxyUriParser(BaseParser):
             uuid, password = userinfo, ""
 
         host_port, _, qs = rest.partition("?")
+        host_port = host_port.rstrip("/")
         if ":" in host_port:
             host, port_str = host_port.rsplit(":", 1)
             port = int(port_str)
