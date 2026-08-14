@@ -10,6 +10,7 @@ import aiohttp
 from fns.collectors.base import BaseCollector, RawContent
 from fns.collectors.web_scraper import BASE64_RE, SUB_LINK_RE, URI_LINE_RE, fetch_linked_content
 from fns.config import GithubSourceConfig
+from fns.parsers.base64_sub import Base64SubParser
 
 logger = logging.getLogger("fns")
 
@@ -202,7 +203,7 @@ class GithubCollector(BaseCollector):
             # 3. Extract base64 blobs embedded in README text
             for match in BASE64_RE.finditer(text):
                 b64 = match.group(0)
-                if len(b64) >= 40:
+                if len(b64) >= 40 and Base64SubParser.can_parse(b64):
                     local_results.append(RawContent(
                         text=b64,
                         source_url=html_url,

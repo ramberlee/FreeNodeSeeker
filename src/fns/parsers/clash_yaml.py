@@ -8,7 +8,7 @@ import logging
 
 import yaml
 
-from fns.models import ProxyNode, ProxyType
+from fns.models import ProxyNode, ProxyType, normalize_address, normalize_transport
 from fns.parsers.base import BaseParser, ParseResult
 
 logger = logging.getLogger("fns")
@@ -19,10 +19,15 @@ _CLASH_TYPE_MAP = {
     "vless": ProxyType.VLESS,
     "ss": ProxyType.SS,
     "shadowsocks": ProxyType.SS,
+    "ssr": ProxyType.SSR,
     "trojan": ProxyType.TROJAN,
+    "hysteria": ProxyType.HYSTERIA,
     "hysteria2": ProxyType.HYSTERIA2,
     "tuic": ProxyType.TUIC,
+    "anytls": ProxyType.ANYTLS,
+    "mieru": ProxyType.MIERU,
     "http": ProxyType.HTTP,
+    "socks": ProxyType.SOCKS5,
     "socks5": ProxyType.SOCKS5,
 }
 
@@ -79,23 +84,44 @@ class ClashYamlParser(BaseParser):
 
         reality_opts = proxy.get("reality-opts")
         reality_opts_dict = reality_opts if isinstance(reality_opts, dict) else {}
+        tls_value = proxy.get("tls")
+        if tls_value is None and proxy_type in (
+            ProxyType.TROJAN,
+            ProxyType.HYSTERIA,
+            ProxyType.HYSTERIA2,
+            ProxyType.TUIC,
+            ProxyType.ANYTLS,
+        ):
+            # These protocols always use TLS; many subscriptions omit the key.
+            tls = True
+        else:
+            tls = _as_bool(tls_value)
+
         node = ProxyNode(
             node_type=proxy_type,
-            address=str(proxy.get("server", "")),
+            address=normalize_address(str(proxy.get("server", ""))),
             port=int(proxy.get("port", 0)),
             uuid=proxy.get("uuid", ""),
-            password=proxy.get("password", ""),
+            password=(
+                proxy.get("password", "")
+                or proxy.get("auth", "")
+                or proxy.get("auth_str", "")
+                or proxy.get("auth-str", "")
+            ),
             username=proxy.get("username", ""),
             method=proxy.get("cipher", proxy.get("method", "")),
             encryption=proxy.get("cipher", proxy.get("encryption", "")),
             flow=proxy.get("flow", ""),
             plugin=proxy.get("plugin", ""),
             plugin_opts=_get_plugin_opts(proxy),
+            protocol=proxy.get("protocol"),
+            protocol_param=proxy.get("protocol-param"),
+            obfs_param=proxy.get("obfs-param"),
             grpc_service_name=_get_grpc_service_name(proxy),
-            transport=proxy.get("network", "tcp"),
+            transport=normalize_transport(proxy.get("network", "tcp")) or "tcp",
             ws_path=_get_ws_opts_path(proxy),
             ws_host=_get_ws_opts_host(proxy),
-            tls=proxy.get("tls", False) is True or str(proxy.get("tls", "")).lower() == "true",
+            tls=tls,
             sni=proxy.get("servername", proxy.get("sni", "")),
             skip_cert_verify=_as_bool(proxy.get("skip-cert-verify", False)),
             fingerprint=proxy.get("client-fingerprint", proxy.get("fp", "")),
@@ -105,6 +131,7 @@ class ClashYamlParser(BaseParser):
             obfs_password=proxy.get("obfs-password", ""),
             up_speed=proxy.get("up", proxy.get("up-speed")),
             down_speed=proxy.get("down", proxy.get("down-speed")),
+            mieru_transport=proxy.get("transport"),
             source=source,
             remark=proxy.get("name", ""),
         )

@@ -7,16 +7,26 @@ from __future__ import annotations
 import yaml
 
 from fns.config import ClashOutputConfig
-from fns.models import ProxyNode, ProxyType
+from fns.models import (
+    ProxyNode,
+    ProxyType,
+    effective_sni,
+    normalize_address,
+    normalize_transport,
+)
 from fns.utils.geo import country_cn_name, country_flag, detect_country_code
 
 _CLASH_TYPE = {
     ProxyType.VMESS: "vmess",
     ProxyType.VLESS: "vless",
     ProxyType.SS: "ss",
+    ProxyType.SSR: "ssr",
     ProxyType.TROJAN: "trojan",
+    ProxyType.HYSTERIA: "hysteria",
     ProxyType.HYSTERIA2: "hysteria2",
     ProxyType.TUIC: "tuic",
+    ProxyType.ANYTLS: "anytls",
+    ProxyType.MIERU: "mieru",
     ProxyType.HTTP: "http",
     ProxyType.SOCKS5: "socks5",
 }
@@ -49,7 +59,7 @@ def node_to_clash_proxy(node: ProxyNode) -> dict:
     proxy = {
         "name": node.remark or f"{node.address}:{node.port}",
         "type": _CLASH_TYPE.get(node.node_type, "vmess"),
-        "server": node.address,
+        "server": normalize_address(node.address),
         "port": node.port,
     }
 
@@ -58,9 +68,9 @@ def node_to_clash_proxy(node: ProxyNode) -> dict:
         proxy["alterId"] = 0
         proxy["cipher"] = node.encryption or "auto"
         proxy["tls"] = node.tls
-        proxy["sni"] = node.sni or ""
+        proxy["sni"] = effective_sni(node)
         proxy["fingerprint"] = node.fingerprint or ""
-        proxy["network"] = node.transport or "tcp"
+        proxy["network"] = normalize_transport(node.transport) or "tcp"
         if node.transport == "ws":
             proxy["ws-opts"] = {
                 "path": node.ws_path or "/",
@@ -72,10 +82,10 @@ def node_to_clash_proxy(node: ProxyNode) -> dict:
     elif node.node_type == ProxyType.VLESS:
         proxy["uuid"] = node.uuid or ""
         proxy["tls"] = node.tls
-        proxy["sni"] = node.sni or ""
+        proxy["sni"] = effective_sni(node)
         proxy["fingerprint"] = node.fingerprint or ""
-        proxy["network"] = node.transport or "tcp"
-        proxy["servername"] = node.sni or ""
+        proxy["network"] = normalize_transport(node.transport) or "tcp"
+        proxy["servername"] = effective_sni(node)
         proxy["flow"] = node.flow or ""
         if node.skip_cert_verify:
             proxy["skip-cert-verify"] = True
@@ -100,12 +110,20 @@ def node_to_clash_proxy(node: ProxyNode) -> dict:
         proxy["plugin"] = node.plugin or ""
         proxy["plugin-opts"] = node.plugin_opts or {}
 
+    elif node.node_type == ProxyType.SSR:
+        proxy["cipher"] = node.method or "aes-256-cfb"
+        proxy["password"] = node.password or ""
+        proxy["protocol"] = node.protocol or "origin"
+        proxy["protocol-param"] = node.protocol_param or ""
+        proxy["obfs"] = node.obfs or "plain"
+        proxy["obfs-param"] = node.obfs_param or ""
+
     elif node.node_type == ProxyType.TROJAN:
         proxy["password"] = node.password or ""
         proxy["tls"] = node.tls
-        proxy["sni"] = node.sni or ""
+        proxy["sni"] = effective_sni(node)
         proxy["fingerprint"] = node.fingerprint or ""
-        proxy["network"] = node.transport or "tcp"
+        proxy["network"] = normalize_transport(node.transport) or "tcp"
         if node.skip_cert_verify or not node.tls:
             proxy["skip-cert-verify"] = True
         if node.transport == "ws":
@@ -115,6 +133,19 @@ def node_to_clash_proxy(node: ProxyNode) -> dict:
             }
         if node.transport == "grpc" and node.grpc_service_name:
             proxy["grpc-opts"] = {"grpc-service-name": node.grpc_service_name}
+
+    elif node.node_type == ProxyType.HYSTERIA:
+        proxy["auth-str"] = node.password or ""
+        proxy["sni"] = node.sni or ""
+        proxy["skip-cert-verify"] = node.skip_cert_verify or not node.tls
+        if node.obfs:
+            proxy["obfs"] = node.obfs
+        if node.obfs_password:
+            proxy["obfs-password"] = node.obfs_password
+        if node.up_speed is not None:
+            proxy["up"] = node.up_speed
+        if node.down_speed is not None:
+            proxy["down"] = node.down_speed
 
     elif node.node_type == ProxyType.HYSTERIA2:
         proxy["password"] = node.password or ""
@@ -138,6 +169,18 @@ def node_to_clash_proxy(node: ProxyNode) -> dict:
             proxy["congestion-controller"] = node.congestion_control
         if node.udp_relay_mode:
             proxy["udp-relay-mode"] = node.udp_relay_mode
+
+    elif node.node_type == ProxyType.ANYTLS:
+        proxy["password"] = node.password or ""
+        proxy["sni"] = effective_sni(node)
+        proxy["skip-cert-verify"] = node.skip_cert_verify or not node.tls
+        if node.fingerprint:
+            proxy["fingerprint"] = node.fingerprint
+
+    elif node.node_type == ProxyType.MIERU:
+        proxy["username"] = node.username or ""
+        proxy["password"] = node.password or ""
+        proxy["transport"] = (node.mieru_transport or "TCP").upper()
 
     elif node.node_type in (ProxyType.HTTP, ProxyType.SOCKS5):
         if node.username:

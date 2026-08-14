@@ -4,13 +4,40 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+def normalize_address(address: str) -> str:
+    """Return a bare host/IP, stripping IPv6 brackets (``[::1]`` -> ``::1``)."""
+    if address.startswith("[") and address.endswith("]"):
+        return address[1:-1]
+    return address
+
+
+def format_host_port(host: str, port: int) -> str:
+    """Build host:port, bracketing IPv6 addresses for use in URLs and URIs."""
+    host = normalize_address(host)
+    if ":" in host:
+        return f"[{host}]:{port}"
+    return f"{host}:{port}"
+
+
+def normalize_transport(transport: str | None) -> str | None:
+    """Normalize transport names; v2ray's raw transport means plain TCP."""
+    if transport is None:
+        return None
+    normalized = transport.strip().lower()
+    return "tcp" if normalized == "raw" else normalized
+
+
 class ProxyType(str, Enum):
     VMESS = "vmess"
     VLESS = "vless"
     SS = "ss"
+    SSR = "ssr"
     TROJAN = "trojan"
+    HYSTERIA = "hysteria"
     HYSTERIA2 = "hysteria2"
     TUIC = "tuic"
+    ANYTLS = "anytls"
+    MIERU = "mieru"
     HTTP = "http"
     SOCKS5 = "socks5"
 
@@ -55,6 +82,14 @@ class ProxyNode:
     congestion_control: str | None = None
     udp_relay_mode: str | None = None
 
+    # SSR specific
+    protocol: str | None = None
+    protocol_param: str | None = None
+    obfs_param: str | None = None
+
+    # Mieru specific
+    mieru_transport: str | None = None
+
     # Quality
     latency_ms: float | None = None
     is_alive: bool = False
@@ -67,6 +102,19 @@ class ProxyNode:
     @property
     def key(self) -> tuple[str, int, str]:
         return (self.address, self.port, self.node_type.value)
+
+
+def effective_sni(node: ProxyNode) -> str:
+    """Return the TLS SNI, falling back to the WS Host header for TLS+WS nodes."""
+    if node.sni:
+        return node.sni
+    if (
+        node.tls
+        and node.transport in ("ws", "http", "httpupgrade", "h2")
+        and node.ws_host
+    ):
+        return node.ws_host
+    return ""
 
 
 @dataclass

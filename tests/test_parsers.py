@@ -89,6 +89,69 @@ class TestProxyUriParser:
         assert n.transport == "ws"
         assert n.ws_path == "/ws"
 
+    def test_vmess_raw_json_compact(self):
+        # Some subscriptions emit vmess://{json} without base64 and without
+        # spaces; safe_b64decode raises on these payloads, so the raw JSON
+        # fallback must be reached.
+        uri = (
+            'vmess://{"v":"2","ps":"Compact","add":"67.220.95.3",'
+            '"port":"18000","id":"f8c8dc3d-0d37-4"}'
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.VMESS
+        assert n.address == "67.220.95.3"
+        assert n.port == 18000
+        assert n.remark == "Compact"
+
+    def test_vmess_json_boolean_tls_and_sni_fallback(self):
+        payload = base64.b64encode(
+            json.dumps(
+                {
+                    "v": "2",
+                    "ps": "TLS-Bool",
+                    "add": "1.2.3.4",
+                    "port": "443",
+                    "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
+                    "scy": "auto",
+                    "net": "ws",
+                    "host": "cdn.example.com",
+                    "path": "/ws",
+                    "tls": True,
+                }
+            ).encode()
+        ).decode()
+        parser = ProxyUriParser()
+        result = parser.parse(f"vmess://{payload}", "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.VMESS
+        assert n.tls is True
+        assert n.sni == "cdn.example.com"
+
+    def test_vmess_raw_transport_normalized_to_tcp(self):
+        payload = base64.b64encode(
+            json.dumps(
+                {
+                    "v": "2",
+                    "ps": "Raw",
+                    "add": "1.2.3.4",
+                    "port": "443",
+                    "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
+                    "net": "raw",
+                }
+            ).encode()
+        ).decode()
+        parser = ProxyUriParser()
+        result = parser.parse(f"vmess://{payload}", "test")
+
+        assert len(result.nodes) == 1
+        assert result.nodes[0].transport == "tcp"
+
     def test_vmess_mislabeled_vless(self):
         uri = (
             "vmess://b831381d-6324-4d53-ad4f-8cda48b30811@vless.example.com:443/"
@@ -121,6 +184,20 @@ class TestProxyUriParser:
         assert n.port == 443
         assert n.transport == "ws"
         assert n.remark == "Test-VLESS"
+
+    def test_vless_sni_implies_tls(self):
+        uri = (
+            "vless://b831381d-6324-4d53-ad4f-8cda48b30811@1.2.3.4:443"
+            "?type=ws&sni=cdn.example.com&host=cdn.example.com&path=/ws"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.VLESS
+        assert n.tls is True
+        assert n.sni == "cdn.example.com"
 
     def test_hysteria2_trailing_slash(self):
         uri = (
@@ -192,6 +269,75 @@ class TestProxyUriParser:
         assert n.method == "aes-256-gcm"
         assert n.remark == "Legacy-Remark"
 
+    def test_ss_plaintext_userinfo(self):
+        uri = "ss://aes-128-gcm%3A6601fb90e9b3@192.0.2.1:1#Plain"
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.SS
+        assert n.address == "192.0.2.1"
+        assert n.port == 1
+        assert n.method == "aes-128-gcm"
+        assert n.password == "6601fb90e9b3"
+
+    def test_ss_plaintext_userinfo_without_method(self):
+        uri = "ss://InternetAzadRobot@151.101.1.57:80?mode=auto"
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.SS
+        assert n.method == "aes-256-gcm"
+        assert n.password == "InternetAzadRobot"
+
+    def test_ss_uuid_userinfo_not_mangled(self):
+        # UUID-like userinfo is not valid base64 for method:password and must
+        # be kept verbatim instead of being decoded into garbage bytes.
+        uuid = "04c808e2-0b59-47b0-a54b-32fc7ef1c902"
+        uri = (
+            f"ss://{uuid}@japan.com:443?sni=example.com"
+            "&type=ws&host=example.com&path=/"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.SS
+        assert n.address == "japan.com"
+        assert n.port == 443
+        assert n.password == uuid
+
+    def test_ss_vmess_json_userinfo(self):
+        payload = base64.b64encode(
+            json.dumps(
+                {
+                    "v": "2",
+                    "ps": "JSON-in-SS",
+                    "add": "1.2.3.4",
+                    "port": "443",
+                    "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
+                    "net": "ws",
+                    "host": "example.com",
+                    "path": "/ws",
+                }
+            ).encode()
+        ).decode()
+        parser = ProxyUriParser()
+        result = parser.parse(f"ss://{payload}@1.2.3.4:443#X", "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.VMESS
+        assert n.address == "1.2.3.4"
+        assert n.port == 443
+        assert n.transport == "ws"
+        assert n.ws_path == "/ws"
+        assert n.remark == "JSON-in-SS"
+
     def test_trojan(self):
         uri = "trojan://trojan-password@trojan.example.com:443?security=tls&type=tcp&sni=trojan.example.com#Test-Trojan"
         parser = ProxyUriParser()
@@ -205,6 +351,95 @@ class TestProxyUriParser:
         assert n.password == "trojan-password"
         assert n.tls is True
         assert n.sni == "trojan.example.com"
+
+    def test_trojan_password_with_hash(self):
+        uri = (
+            "trojan://8r<[9'l6hAO#8ZQi@104.16.7.70:443"
+            "?path=/tr&security=tls&insecure=1&host="
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.TROJAN
+        assert n.address == "104.16.7.70"
+        assert n.port == 443
+        assert n.password == "8r<[9'l6hAO#8ZQi"
+        assert n.tls is True
+
+    def test_ipv6_bracketed_addresses(self):
+        parser = ProxyUriParser()
+        cases = [
+            (
+                "vless://b831381d-6324-4d53-ad4f-8cda48b30811@[2001:db8::1]:443#R",
+                ProxyType.VLESS,
+                443,
+            ),
+            ("ss://YWVzLTI1Ni1nY206dGVzdDEyMw==@[2001:db8::2]:8388#R", ProxyType.SS, 8388),
+            ("trojan://pw@[2001:db8::3]:443#R", ProxyType.TROJAN, 443),
+            ("hysteria2://pass@[2001:db8::4]:8443?sni=x#R", ProxyType.HYSTERIA2, 8443),
+            ("tuic://uuid:pass@[2001:db8::5]:443?sni=x#R", ProxyType.TUIC, 443),
+        ]
+        for uri, expected_type, expected_port in cases:
+            result = parser.parse(uri, "test")
+            assert len(result.nodes) == 1, uri
+            n = result.nodes[0]
+            assert n.node_type == expected_type
+            assert n.address.startswith("2001:db8::")
+            assert "[" not in n.address
+            assert n.port == expected_port
+
+    def test_hysteria_v1_uri(self):
+        uri = (
+            "hysteria://1.2.3.4:443?auth=pass&upmbps=50&downmbps=150"
+            "&obfs=salamander&obfsparam=x&sni=example.com&insecure=1#H1"
+        )
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.HYSTERIA
+        assert n.password == "pass"
+        assert n.up_speed == 50
+        assert n.down_speed == 150
+        assert n.obfs == "salamander"
+        assert n.obfs_password == "x"
+        assert n.sni == "example.com"
+        assert n.skip_cert_verify is True
+
+    def test_ssr_uri(self):
+        payload = base64.b64encode(
+            b"aes-256-cfb:pwd@2.2.2.2:8388/?protocol=auth_sha1_v4"
+            b"&protoparam=a:b&obfs=http_simple&obfsparam=c&remarks=SSR1"
+        ).decode()
+        parser = ProxyUriParser()
+        result = parser.parse(f"ssr://{payload}", "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.SSR
+        assert n.method == "aes-256-cfb"
+        assert n.password == "pwd"
+        assert n.protocol == "auth_sha1_v4"
+        assert n.protocol_param == "a:b"
+        assert n.obfs == "http_simple"
+        assert n.obfs_param == "c"
+        assert n.remark == "SSR1"
+
+    def test_anytls_uri(self):
+        uri = "anytls://pw@3.3.3.3:443?sni=example.com&fp=chrome#AT"
+        parser = ProxyUriParser()
+        result = parser.parse(uri, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.ANYTLS
+        assert n.password == "pw"
+        assert n.sni == "example.com"
+        assert n.fingerprint == "chrome"
+        assert n.tls is True
 
     def test_trojan_grpc_insecure(self):
         uri = (
@@ -267,6 +502,35 @@ class TestProxyUriParser:
     def test_can_parse(self):
         assert ProxyUriParser.can_parse(SAMPLE_MULTI_URI) is True
         assert ProxyUriParser.can_parse("not a uri") is False
+
+    def test_http_proxy_line(self):
+        parser = ProxyUriParser()
+        result = parser.parse("http://user:pass@1.2.3.4:8080", "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.HTTP
+        assert n.address == "1.2.3.4"
+        assert n.port == 8080
+        assert n.username == "user"
+        assert n.password == "pass"
+
+    def test_socks5_proxy_line(self):
+        parser = ProxyUriParser()
+        result = parser.parse("socks5://5.6.7.8:1080", "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.SOCKS5
+        assert n.address == "5.6.7.8"
+        assert n.port == 1080
+
+    def test_http_link_with_path_rejected(self):
+        parser = ProxyUriParser()
+        result = parser.parse("http://example.com/path?q=1", "test")
+
+        assert len(result.nodes) == 0
+        assert result.errors == []
 
 
 class TestClashYamlParser:
@@ -346,6 +610,96 @@ class TestClashYamlParser:
         ) is True
         assert ClashYamlParser.can_parse("not yaml proxies:") is False
 
+    def test_trojan_defaults_to_tls(self):
+        text = """proxies:
+  - name: Trojan No TLS Key
+    type: trojan
+    server: 1.1.1.1
+    port: 443
+    password: pw
+    sni: example.com
+  - name: Hysteria2 No TLS Key
+    type: hysteria2
+    server: 2.2.2.2
+    port: 443
+    password: pw
+"""
+        parser = ClashYamlParser()
+        result = parser.parse(text, "test")
+
+        assert len(result.nodes) == 2
+        trojan = result.nodes[0]
+        assert trojan.node_type == ProxyType.TROJAN
+        assert trojan.tls is True
+        hy2 = result.nodes[1]
+        assert hy2.node_type == ProxyType.HYSTERIA2
+        assert hy2.tls is True
+
+    def test_trojan_explicit_tls_false_is_respected(self):
+        text = """proxies:
+  - name: Trojan No TLS
+    type: trojan
+    server: 1.1.1.1
+    port: 443
+    password: pw
+    tls: false
+"""
+        parser = ClashYamlParser()
+        result = parser.parse(text, "test")
+
+        assert len(result.nodes) == 1
+        assert result.nodes[0].tls is False
+
+    def test_parse_extra_protocol_types(self):
+        text = """proxies:
+  - name: H
+    type: hysteria
+    server: 1.2.3.4
+    port: 443
+    auth-str: pass
+    up: 50
+    down: 150
+  - name: R
+    type: ssr
+    server: 2.2.2.2
+    port: 8388
+    cipher: aes-256-cfb
+    password: pwd
+    protocol: auth_sha1_v4
+    protocol-param: a
+    obfs: http_simple
+    obfs-param: b
+  - name: A
+    type: anytls
+    server: 3.3.3.3
+    port: 443
+    password: pw
+    sni: example.com
+  - name: M
+    type: mieru
+    server: 4.4.4.4
+    port: 443
+    username: user
+    password: pass
+    transport: TCP
+"""
+        parser = ClashYamlParser()
+        result = parser.parse(text, "test")
+
+        assert len(result.nodes) == 4
+        h, r, a, m = result.nodes
+        assert h.node_type == ProxyType.HYSTERIA
+        assert h.password == "pass"
+        assert h.tls is True
+        assert r.node_type == ProxyType.SSR
+        assert r.protocol == "auth_sha1_v4"
+        assert r.obfs_param == "b"
+        assert a.node_type == ProxyType.ANYTLS
+        assert a.tls is True
+        assert m.node_type == ProxyType.MIERU
+        assert m.username == "user"
+        assert m.mieru_transport == "TCP"
+
 
 class TestSingBoxParser:
     def test_parse_vless_ws(self):
@@ -412,6 +766,68 @@ class TestSingBoxParser:
         assert n.transport == "grpc"
         assert n.grpc_service_name == "example-service"
         assert n.skip_cert_verify is True
+
+    def test_parse_trojan_tls_block_without_enabled(self):
+        text = json.dumps(
+            {
+                "outbounds": [
+                    {
+                        "type": "trojan",
+                        "tag": "Test-Trojan",
+                        "server": "1.2.3.4",
+                        "server_port": 443,
+                        "password": "pw",
+                        "tls": {"insecure": True},
+                    }
+                ]
+            }
+        )
+        result = parse_auto(text, "test")
+
+        assert len(result.nodes) == 1
+        n = result.nodes[0]
+        assert n.node_type == ProxyType.TROJAN
+        assert n.tls is True
+        assert n.skip_cert_verify is True
+
+    def test_parse_ssr_and_mieru(self):
+        text = json.dumps(
+            {
+                "outbounds": [
+                    {
+                        "type": "shadowsocksr",
+                        "tag": "R",
+                        "server": "1.2.3.4",
+                        "server_port": 8388,
+                        "method": "aes-256-cfb",
+                        "password": "pwd",
+                        "protocol": "auth_sha1_v4",
+                        "protocol_param": "a",
+                        "obfs": "http_simple",
+                        "obfs_param": "b",
+                    },
+                    {
+                        "type": "mieru",
+                        "tag": "M",
+                        "server": "4.4.4.4",
+                        "server_port": 443,
+                        "username": "user",
+                        "password": "pass",
+                        "transport": "tcp",
+                    },
+                ]
+            }
+        )
+        result = parse_auto(text, "test")
+
+        assert len(result.nodes) == 2
+        r, m = result.nodes
+        assert r.node_type == ProxyType.SSR
+        assert r.protocol == "auth_sha1_v4"
+        assert r.obfs_param == "b"
+        assert m.node_type == ProxyType.MIERU
+        assert m.username == "user"
+        assert m.mieru_transport == "tcp"
 
 
 class TestBase64SubParser:
@@ -494,3 +910,32 @@ class TestDetector:
         assert fmt == "base64_sub"
         assert pre == SAMPLE_MULTI_URI
         assert len(parse_auto(payload, "test").nodes) == 3
+
+    def test_detect_mixed_proxy_list_with_tg_prefix(self):
+        text = (
+            "tg://proxy?server=1.2.3.4&port=443&secret=abc\n"
+            "trojan://pw@1.2.3.4:443#TR\n"
+            "ss://YWVzLTI1Ni1nY206dGVzdDEyMw==@5.6.7.8:8388#SS\n"
+            "http://user:pass@9.9.9.9:8080\n"
+        )
+        fmt, pre = detect_format(text)
+        assert fmt == "proxy_uri"
+
+        result = parse_auto(text, "test")
+        assert len(result.nodes) == 3
+        assert {n.node_type for n in result.nodes} == {
+            ProxyType.TROJAN,
+            ProxyType.SS,
+            ProxyType.HTTP,
+        }
+
+    def test_parse_base64_plain_proxy_list(self):
+        text = "http://1.2.3.4:8080\nsocks5://5.6.7.8:1080\n"
+        payload = base64.b64encode(text.encode()).decode()
+        fmt, pre = detect_format(payload)
+        assert fmt == "base64_sub"
+
+        result = parse_auto(payload, "test")
+        assert len(result.nodes) == 2
+        assert result.nodes[0].node_type == ProxyType.HTTP
+        assert result.nodes[1].node_type == ProxyType.SOCKS5

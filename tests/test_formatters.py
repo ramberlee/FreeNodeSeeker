@@ -114,6 +114,90 @@ class TestClashOutput:
         proxy = clash_module.node_to_clash_proxy(node)
         assert "reality-opts" not in proxy
 
+    def test_tls_ws_sni_falls_back_to_host(self):
+        for node_type in (ProxyType.VMESS, ProxyType.VLESS, ProxyType.TROJAN):
+            node = ProxyNode(
+                node_type=node_type,
+                address="1.2.3.4",
+                port=443,
+                uuid="uuid" if node_type != ProxyType.TROJAN else None,
+                password="pw" if node_type == ProxyType.TROJAN else None,
+                tls=True,
+                transport="ws",
+                ws_host="cdn.example.com",
+                ws_path="/ws",
+            )
+            proxy = clash_module.node_to_clash_proxy(node)
+            assert proxy["sni"] == "cdn.example.com"
+
+    def test_vmess_raw_transport_outputs_tcp(self):
+        node = ProxyNode(
+            node_type=ProxyType.VMESS,
+            address="1.2.3.4",
+            port=443,
+            uuid="uuid",
+            transport="raw",
+        )
+        proxy = clash_module.node_to_clash_proxy(node)
+        assert proxy["network"] == "tcp"
+
+    def test_extra_protocol_types(self):
+        h = ProxyNode(
+            node_type=ProxyType.HYSTERIA,
+            address="1.2.3.4",
+            port=443,
+            password="pass",
+            up_speed=50,
+            down_speed=150,
+            obfs="salamander",
+            obfs_password="x",
+            sni="example.com",
+            tls=True,
+            skip_cert_verify=True,
+        )
+        r = ProxyNode(
+            node_type=ProxyType.SSR,
+            address="2.2.2.2",
+            port=8388,
+            method="aes-256-cfb",
+            password="pwd",
+            protocol="auth_sha1_v4",
+            protocol_param="a",
+            obfs="http_simple",
+            obfs_param="b",
+        )
+        a = ProxyNode(
+            node_type=ProxyType.ANYTLS,
+            address="3.3.3.3",
+            port=443,
+            password="pw",
+            sni="example.com",
+            tls=True,
+        )
+        m = ProxyNode(
+            node_type=ProxyType.MIERU,
+            address="4.4.4.4",
+            port=443,
+            username="user",
+            password="pass",
+            mieru_transport="tcp",
+        )
+
+        hp = clash_module.node_to_clash_proxy(h)
+        assert hp["type"] == "hysteria"
+        assert hp["auth-str"] == "pass"
+        rp = clash_module.node_to_clash_proxy(r)
+        assert rp["type"] == "ssr"
+        assert rp["protocol"] == "auth_sha1_v4"
+        assert rp["obfs-param"] == "b"
+        ap = clash_module.node_to_clash_proxy(a)
+        assert ap["type"] == "anytls"
+        assert ap["password"] == "pw"
+        mp = clash_module.node_to_clash_proxy(m)
+        assert mp["type"] == "mieru"
+        assert mp["username"] == "user"
+        assert mp["transport"] == "TCP"
+
     def test_ss_plugin_options(self):
         node = ProxyNode(
             node_type=ProxyType.SS,
@@ -278,6 +362,95 @@ class TestBase64Output:
         assert "insecure=1" in decoded
         parsed = self._roundtrip_first(node)
         assert parsed.skip_cert_verify is True
+
+    def test_ipv6_vless_uri_roundtrip(self):
+        node = ProxyNode(
+            node_type=ProxyType.VLESS,
+            address="2001:db8::1",
+            port=443,
+            uuid="b831381d-6324-4d53-ad4f-8cda48b30811",
+            remark="V6",
+        )
+        output = format_base64_sub([node])
+        decoded = safe_b64decode(output).decode("utf-8")
+        assert "[2001:db8::1]:443" in decoded
+
+        parsed = self._roundtrip_first(node)
+        assert parsed.address == "2001:db8::1"
+        assert parsed.port == 443
+
+    def test_trojan_special_password_roundtrip(self):
+        node = ProxyNode(
+            node_type=ProxyType.TROJAN,
+            address="trojan.example.com",
+            port=443,
+            password="p@ss#word",
+            tls=True,
+        )
+        output = format_base64_sub([node])
+        decoded = safe_b64decode(output).decode("utf-8")
+        assert "%40" in decoded
+        assert "%23" in decoded
+
+        parsed = self._roundtrip_first(node)
+        assert parsed.password == "p@ss#word"
+
+    def test_vmess_tls_ws_sni_fallback_roundtrip(self):
+        node = ProxyNode(
+            node_type=ProxyType.VMESS,
+            address="1.2.3.4",
+            port=443,
+            uuid="b831381d-6324-4d53-ad4f-8cda48b30811",
+            tls=True,
+            transport="ws",
+            ws_host="cdn.example.com",
+            ws_path="/ws",
+        )
+        parsed = self._roundtrip_first(node)
+        assert parsed.tls is True
+        assert parsed.sni == "cdn.example.com"
+
+    def test_extra_protocol_uri_roundtrips(self):
+        cases = [
+            ProxyNode(
+                node_type=ProxyType.HYSTERIA,
+                address="1.2.3.4",
+                port=443,
+                password="pass",
+                up_speed=50,
+                down_speed=150,
+                obfs="salamander",
+                obfs_password="x",
+                sni="example.com",
+                tls=True,
+                skip_cert_verify=True,
+            ),
+            ProxyNode(
+                node_type=ProxyType.SSR,
+                address="2.2.2.2",
+                port=8388,
+                method="aes-256-cfb",
+                password="pwd",
+                protocol="auth_sha1_v4",
+                protocol_param="a:b",
+                obfs="http_simple",
+                obfs_param="c",
+            ),
+            ProxyNode(
+                node_type=ProxyType.ANYTLS,
+                address="3.3.3.3",
+                port=443,
+                password="pw",
+                sni="example.com",
+                tls=True,
+            ),
+        ]
+        for node in cases:
+            parsed = self._roundtrip_first(node)
+            assert parsed.node_type == node.node_type
+            assert parsed.address == node.address
+            assert parsed.port == node.port
+            assert parsed.password == node.password
 
 
 class TestJsonOutput:

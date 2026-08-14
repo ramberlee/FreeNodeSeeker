@@ -99,7 +99,18 @@ class TestTcpValidator:
         assert result.is_alive is False
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("node_type", [ProxyType.SS, ProxyType.TROJAN, ProxyType.TUIC])
+    @pytest.mark.parametrize(
+        "node_type",
+        [
+            ProxyType.SS,
+            ProxyType.TROJAN,
+            ProxyType.TUIC,
+            ProxyType.HYSTERIA,
+            ProxyType.SSR,
+            ProxyType.ANYTLS,
+            ProxyType.MIERU,
+        ],
+    )
     async def test_dispatch_to_mihomo_when_available(self, monkeypatch, node_type):
         cfg = ValidatorConfig(
             concurrency=1, timeout=2.0, retries=0, test_url="http://www.google.com/"
@@ -190,6 +201,42 @@ class TestTcpValidator:
         )
         result = await validator.validate_one(node)
 
+        assert result.is_alive is False
+        assert result.validation_error == "proxy_status_403"
+
+    @pytest.mark.asyncio
+    async def test_mihomo_does_not_retry_definitive_status(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1,
+            timeout=2.0,
+            retries=3,
+            test_url="https://www.gstatic.com/generate_204",
+        )
+        validator = TcpValidator(cfg)
+        calls = []
+
+        async def fake_validate(node, test_url, timeout, session=None):
+            calls.append(1)
+            node.validation_error = "proxy_status_403"
+            return False, None
+
+        async def fake_get_session():
+            return object()
+
+        monkeypatch.setattr(validator, "_get_session", fake_get_session)
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._validate_via_mihomo", fake_validate
+        )
+
+        node = ProxyNode(
+            node_type=ProxyType.VLESS,
+            address="1.2.3.4",
+            port=443,
+            uuid="b831381d-6324-4d53-ad4f-8cda48b30811",
+        )
+        result = await validator._try_mihomo(node)
+
+        assert len(calls) == 1
         assert result.is_alive is False
         assert result.validation_error == "proxy_status_403"
 
@@ -548,6 +595,169 @@ class TestTcpValidator:
         assert seen[0] == "trojan+ssl://trojan.example.com:443#p@ss/word"
 
     @pytest.mark.asyncio
+    async def test_http_ipv6_proxy_url(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1, timeout=2.0, retries=0, test_url="http://www.google.com/"
+        )
+        validator = TcpValidator(cfg)
+        calls = []
+
+        class FakeResponse:
+            status = 200
+
+            async def read(self):
+                return b""
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            def get(self, *args, **kwargs):
+                calls.append(kwargs)
+                return FakeResponse()
+
+        async def fake_get_session():
+            return FakeSession()
+
+        monkeypatch.setattr(validator, "_get_session", fake_get_session)
+
+        node = ProxyNode(
+            node_type=ProxyType.HTTP,
+            address="2001:db8::1",
+            port=8080,
+        )
+        result = await validator.validate_one(node)
+        assert result.is_alive is True
+        assert calls[0]["proxy"] == "http://[2001:db8::1]:8080"
+
+    @pytest.mark.asyncio
+    async def test_quick_tcp_check_strips_ipv6_brackets(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1, timeout=2.0, retries=0, test_url="http://www.google.com/"
+        )
+        validator = TcpValidator(cfg)
+        captured = {}
+
+        class FakeWriter:
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        async def fake_open_connection(host, port):
+            captured["host"] = host
+            captured["port"] = port
+            return None, FakeWriter()
+
+        monkeypatch.setattr("asyncio.open_connection", fake_open_connection)
+
+        node = ProxyNode(
+            node_type=ProxyType.HTTP,
+            address="[2001:db8::1]",
+            port=8080,
+        )
+        assert await validator._quick_tcp_check(node) is True
+        assert captured == {"host": "2001:db8::1", "port": 8080}
+
+    @pytest.mark.asyncio
+    async def test_ss_uri_brackets_ipv6(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1,
+            timeout=2.0,
+            retries=0,
+            test_url="https://www.gstatic.com/generate_204",
+        )
+        validator = TcpValidator(cfg)
+        seen = []
+
+        class FakeWriter:
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        class FakeConnection:
+            def __init__(self, uri):
+                seen.append(uri)
+
+            async def tcp_connect(self, host, port):
+                return None, FakeWriter()
+
+        async def ok_http(reader, writer, test_url, timeout):
+            return True
+
+        monkeypatch.setattr("pproxy.Connection", FakeConnection)
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._find_mihomo", lambda: None
+        )
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._send_http_get", ok_http
+        )
+
+        node = ProxyNode(
+            node_type=ProxyType.SS,
+            address="2001:db8::1",
+            port=8388,
+            method="aes-256-gcm",
+            password="test",
+        )
+        result = await validator.validate_one(node)
+        assert result.is_alive is True
+        assert seen[0].endswith("@[2001:db8::1]:8388")
+
+    @pytest.mark.asyncio
+    async def test_trojan_uri_brackets_ipv6_raw_password(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1,
+            timeout=2.0,
+            retries=0,
+            test_url="https://www.gstatic.com/generate_204",
+        )
+        validator = TcpValidator(cfg)
+        seen = []
+
+        class FakeWriter:
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        class FakeConnection:
+            def __init__(self, uri):
+                seen.append(uri)
+
+            async def tcp_connect(self, host, port):
+                return None, FakeWriter()
+
+        async def ok_http(reader, writer, test_url, timeout):
+            return True
+
+        monkeypatch.setattr("pproxy.Connection", FakeConnection)
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._find_mihomo", lambda: None
+        )
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._send_http_get", ok_http
+        )
+
+        node = ProxyNode(
+            node_type=ProxyType.TROJAN,
+            address="2001:db8::1",
+            port=443,
+            password="p@ss#word",
+            tls=True,
+        )
+        result = await validator.validate_one(node)
+        assert result.is_alive is True
+        assert seen[0] == "trojan+ssl://[2001:db8::1]:443#p@ss#word"
+
+    @pytest.mark.asyncio
     async def test_mihomo_kills_process_on_wait_timeout(self, monkeypatch):
         class FakeResponse:
             status = 200
@@ -645,6 +855,63 @@ class TestTcpValidator:
         )
         assert ok is False
         assert "mihomo_spawn_failed" in node.validation_error
+
+    @pytest.mark.asyncio
+    async def test_mihomo_request_failure_includes_exception(self, monkeypatch):
+        class FailingSession:
+            closed = False
+
+            def get(self, *args, **kwargs):
+                raise asyncio.TimeoutError()
+
+        class FakeProc:
+            def __init__(self):
+                self.stderr = None
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+            async def wait(self):
+                return 0
+
+        async def fake_wait_for_port(port, timeout):
+            return True
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return FakeProc()
+
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._find_mihomo", lambda: "mihomo.exe"
+        )
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._free_port", lambda: 12345
+        )
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._wait_for_port", fake_wait_for_port
+        )
+        monkeypatch.setattr(
+            "asyncio.create_subprocess_exec", fake_create_subprocess_exec
+        )
+
+        node = ProxyNode(
+            node_type=ProxyType.VLESS,
+            address="1.2.3.4",
+            port=443,
+            uuid="b831381d-6324-4d53-ad4f-8cda48b30811",
+        )
+        ok, _ = await _validate_via_mihomo(
+            node,
+            "https://www.gstatic.com/generate_204",
+            2.0,
+            session=FailingSession(),
+        )
+
+        assert ok is False
+        assert node.validation_error.startswith("mihomo_request_failed: TimeoutError")
+        assert "(after 2.0s)" in node.validation_error
 
     @pytest.mark.asyncio
     async def test_validate_all(self):

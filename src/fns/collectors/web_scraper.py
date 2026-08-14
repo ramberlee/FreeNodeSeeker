@@ -15,7 +15,10 @@ logger = logging.getLogger("fns")
 
 # Patterns to find proxy-related content in HTML
 BASE64_RE = re.compile(r"[A-Za-z0-9+/=]{40,}")
-URI_LINE_RE = re.compile(r"^(vmess|vless|ss|trojan|hysteria2|hy2|tuic)://", re.MULTILINE)
+URI_LINE_RE = re.compile(
+    r"^(vmess|vless|ssr|ss|trojan|hysteria2|hy2|hysteria|tuic|anytls)://",
+    re.MULTILINE,
+)
 SUB_LINK_RE = re.compile(r"https?://[^\s\"'<>]+\.(yaml|yml|txt)[^\s\"'<>]*", re.IGNORECASE)
 
 

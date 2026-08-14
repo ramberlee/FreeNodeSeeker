@@ -158,6 +158,24 @@ async def test_github_limits_uri_lines_per_readme():
 
 
 @pytest.mark.asyncio
+async def test_github_skips_non_subscription_base64_blobs():
+    collector = GithubCollector(GithubSourceConfig(max_collect_nodes=10))
+    good = base64.b64encode(b"vmess://" + b"A" * 50).decode()
+    bad = base64.b64encode(
+        b"this is just some random base64 text that is not a subscription"
+    ).decode()
+    item = {
+        "url": "https://api.github.com/repos/a/contents/README.md",
+        "html_url": "https://github.com/a",
+    }
+
+    results = await collector._fetch_contents(_FakeSession(f"{bad}\n{good}"), [item])
+
+    assert len(results) == 1
+    assert results[0].text == good
+
+
+@pytest.mark.asyncio
 async def test_web_scraper_fetches_unique_links_once(monkeypatch):
     cfg = WebScrapeSourceConfig(urls=["https://example.com/page"], request_delay=0)
     collector = WebScraperCollector(cfg)

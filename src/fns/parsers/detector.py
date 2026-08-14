@@ -5,6 +5,7 @@ Format detector — sniff RawContent format and route to the correct parser.
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -17,7 +18,60 @@ from fns.parsers.sip008 import Sip008Parser
 
 logger = logging.getLogger("fns")
 
-URI_PREFIXES = ("vmess://", "vless://", "ss://", "trojan://", "hysteria2://", "hy2://", "tuic://")
+URI_PREFIXES = (
+    "vmess://",
+    "vless://",
+    "ss://",
+    "ssr://",
+    "trojan://",
+    "hysteria://",
+    "hysteria2://",
+    "hy2://",
+    "tuic://",
+    "anytls://",
+    "http://",
+    "socks5://",
+    "socks://",
+)
+
+_STRONG_PROXY_PREFIXES = (
+    "vmess://",
+    "vless://",
+    "ss://",
+    "ssr://",
+    "trojan://",
+    "hysteria://",
+    "hysteria2://",
+    "hy2://",
+    "tuic://",
+    "anytls://",
+)
+
+
+def _is_strict_http_proxy_line(line: str) -> bool:
+    """True for http://host:port proxy-list lines (no path/query)."""
+    if not line.lower().startswith("http://"):
+        return False
+    try:
+        parsed = urlsplit(line)
+    except ValueError:
+        return False
+    return (
+        bool(parsed.hostname)
+        and parsed.port is not None
+        and parsed.path in ("", "/")
+        and not parsed.query
+    )
+
+
+def _looks_like_proxy_list(clean: str) -> bool:
+    """Detect proxy lists that start with comments/tg:// or mix schemes."""
+    lines = [line.strip() for line in clean.splitlines() if line.strip()][:50]
+    if not lines:
+        return False
+    if any(line.lower().startswith(_STRONG_PROXY_PREFIXES) for line in lines):
+        return True
+    return sum(1 for line in lines if _is_strict_http_proxy_line(line)) >= 3
 
 
 def detect_format(text: str) -> tuple[str, object]:
@@ -51,10 +105,9 @@ def detect_format(text: str) -> tuple[str, object]:
     if Sip008Parser.can_parse(clean):
         return "sip008", None
 
-    # 5. Check for URI lines mixed in text
-    for line in clean.splitlines()[:5]:
-        if line.strip().startswith(URI_PREFIXES):
-            return "proxy_uri", None
+    # 5. Check for proxy URI lines mixed in text (e.g. leading tg:// lines)
+    if _looks_like_proxy_list(clean):
+        return "proxy_uri", None
 
     return "unknown", None
 

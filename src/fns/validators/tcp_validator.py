@@ -16,7 +16,7 @@ import aiohttp
 
 from fns.config import ValidatorConfig
 from fns.formatters.clash import node_to_clash_proxy
-from fns.models import ProxyNode, ProxyType
+from fns.models import ProxyNode, ProxyType, format_host_port
 
 logger = logging.getLogger("fns")
 
@@ -71,6 +71,13 @@ def _parse_host_port(url: str) -> tuple[str, int]:
         parsed.hostname or "www.google.com",
         parsed.port or (443 if parsed.scheme == "https" else 80),
     )
+
+
+def _plain_host(host: str) -> str:
+    """Strip IPv6 brackets for APIs that expect a bare address."""
+    if host.startswith("[") and host.endswith("]"):
+        return host[1:-1]
+    return host
 
 
 def _is_success_status(status: int) -> bool:
@@ -206,7 +213,7 @@ async def _validate_via_mihomo(
         )
 
         try:
-            if not await _wait_for_port(port, min(timeout, 3.0)):
+            if not await _wait_for_port(port, min(timeout, 5.0)):
                 node.validation_error = "mihomo_startup_failed"
                 return False, None
 
@@ -235,8 +242,12 @@ async def _validate_via_mihomo(
 
             elapsed = (time.monotonic() - start) * 1000
             return True, round(elapsed, 1)
-        except Exception:
-            node.validation_error = "mihomo_request_failed"
+        except Exception as e:
+            if isinstance(e, (asyncio.TimeoutError, TimeoutError)) and not str(e):
+                detail = f"{type(e).__name__} (after {timeout:.1f}s)"
+            else:
+                detail = f"{type(e).__name__}: {e}"[:200]
+            node.validation_error = f"mihomo_request_failed: {detail}"
             return False, None
         finally:
             try:
@@ -271,19 +282,17 @@ async def _validate_via_mihomo(
         return False, None
     finally:
         if stderr_tail:
-            if node.validation_error in (
-                None,
-                "mihomo_request_failed",
-                "mihomo_startup_failed",
+            if node.validation_error is None or node.validation_error.startswith(
+                ("mihomo_request_failed", "mihomo_startup_failed")
             ):
                 node.validation_error = (
                     "mihomo_error: "
                     + stderr_tail[-200:].decode("utf-8", errors="replace")
                 )
-            logger.debug(
-                f"mihomo stderr for {node.node_type.value}://{node.address}:{node.port}: "
-                f"{stderr_tail[-500:]!r}"
-            )
+        logger.debug(
+            f"mihomo stderr for {node.node_type.value}://{node.address}:{node.port}: "
+            f"{stderr_tail[-500:]!r}"
+        )
         shutil.rmtree(work_dir, ignore_errors=True)
     return False, None
 
@@ -490,8 +499,8 @@ class TcpValidator:
         """Fast TCP port check to filter out dead nodes before expensive validation."""
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(node.address, node.port),
-                timeout=min(self.timeout * 0.3, 2.0),
+                asyncio.open_connection(_plain_host(node.address), node.port),
+                timeout=min(self.timeout * 0.5, 3.0),
             )
             writer.close()
             try:
@@ -505,7 +514,7 @@ class TcpValidator:
     # ── HTTP ────────────────────────────────────────────────────────────
 
     async def _try_http(self, node: ProxyNode) -> ProxyNode:
-        proxy_url = f"http://{node.address}:{node.port}"
+        proxy_url = f"http://{format_host_port(node.address, node.port)}"
         session = await self._get_session()
         username = getattr(node, "username", None)
         proxy_auth = None
@@ -617,7 +626,7 @@ class TcpValidator:
         # pproxy requires the base64 padding, otherwise short userinfo strings
         # cannot be decoded back to "method:password".
         userinfo = base64.b64encode(f"{method}:{password}".encode()).decode()
-        ss_uri = f"ss://{userinfo}@{node.address}:{node.port}"
+        ss_uri = f"ss://{userinfo}@{format_host_port(node.address, node.port)}"
 
         target_host, target_port = _parse_host_port(self.test_url)
 
@@ -668,7 +677,12 @@ class TcpValidator:
         password = node.password or ""
         # pproxy uses the URI fragment for the Trojan password and +ssl for TLS.
         scheme = "trojan+ssl" if node.tls else "trojan"
-        trojan_uri = f"{scheme}://{node.address}:{node.port}#{password}"
+        # pproxy keeps the raw fragment as the Trojan password, so do not
+        # percent-encode it (raw #/@ inside the fragment survive URL parsing).
+        trojan_uri = (
+            f"{scheme}://{format_host_port(node.address, node.port)}"
+            f"#{password}"
+        )
 
         target_host, target_port = _parse_host_port(self.test_url)
 
@@ -724,6 +738,12 @@ class TcpValidator:
                     node.latency_ms = lat
                     node.validation_error = None
                     return node
+                if node.validation_error and node.validation_error.startswith(
+                    "proxy_status_"
+                ):
+                    # A non-2xx response from the proxy is definitive; retrying
+                    # with another mihomo instance would just overwrite the reason.
+                    break
 
         node.is_alive = False
         node.latency_ms = None

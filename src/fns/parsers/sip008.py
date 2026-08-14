@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fns.models import ProxyNode, ProxyType
+from fns.models import ProxyNode, ProxyType, normalize_address
 from fns.parsers.base import BaseParser, ParseResult
 from fns.utils.crypto import safe_b64decode
 
@@ -50,7 +50,7 @@ class Sip008Parser(BaseParser):
             try:
                 node = ProxyNode(
                     node_type=ProxyType.SS,
-                    address=str(item.get("server", "")),
+                    address=normalize_address(str(item.get("server", ""))),
                     port=int(item.get("server_port", 0)),
                     password=str(item.get("password", "")),
                     method=str(item.get("method", "aes-256-gcm")),

@@ -19,7 +19,7 @@ from fns.collectors.github import GithubCollector
 from fns.collectors.web_scraper import WebScraperCollector
 from fns.config import FnsConfig
 from fns.merger import merge_sources
-from fns.models import PipelineResult, ProxyNode, ProxyType
+from fns.models import PipelineResult, ProxyNode, ProxyType, normalize_address
 from fns.parsers.base import ParseResult
 from fns.parsers.base64_sub import Base64SubParser
 from fns.parsers.detector import parse_auto
@@ -36,7 +36,21 @@ _VALIDATION_REPORT_FILE = "fns.validation_report.json"
 _STATE_FILE = "fns.state.json"
 
 _PARSE_CHUNK_LINES = 20_000
-_URI_PREFIXES = ("vmess://", "vless://", "ss://", "trojan://", "hysteria2://", "hy2://", "tuic://")
+_URI_PREFIXES = (
+    "vmess://",
+    "vless://",
+    "ss://",
+    "ssr://",
+    "trojan://",
+    "hysteria://",
+    "hysteria2://",
+    "hy2://",
+    "tuic://",
+    "anytls://",
+    "http://",
+    "socks5://",
+    "socks://",
+)
 
 
 def _split_parse_chunks(raw: RawContent) -> list[str]:
@@ -71,6 +85,9 @@ def _node_to_record(node: ProxyNode, collector: str | None = None) -> dict:
         "flow": node.flow,
         "plugin": node.plugin,
         "plugin_opts": node.plugin_opts,
+        "protocol": node.protocol,
+        "protocol_param": node.protocol_param,
+        "obfs_param": node.obfs_param,
         "grpc_service_name": node.grpc_service_name,
         "transport": node.transport,
         "ws_path": node.ws_path,
@@ -87,6 +104,7 @@ def _node_to_record(node: ProxyNode, collector: str | None = None) -> dict:
         "down_speed": node.down_speed,
         "congestion_control": node.congestion_control,
         "udp_relay_mode": node.udp_relay_mode,
+        "mieru_transport": node.mieru_transport,
         "latency_ms": node.latency_ms,
         "is_alive": node.is_alive,
         "validation_error": node.validation_error,
@@ -214,9 +232,10 @@ def load_existing_nodes(output_dir: Path) -> list[ProxyNode]:
     nodes = []
     for item in data:
         try:
+            node_type = ProxyType(item.get("node_type", "vmess"))
             node = ProxyNode(
-                node_type=ProxyType(item.get("node_type", "vmess")),
-                address=item.get("address", ""),
+                node_type=node_type,
+                address=normalize_address(item.get("address", "")),
                 port=item.get("port", 0),
                 uuid=item.get("uuid", ""),
                 password=item.get("password", ""),
@@ -226,11 +245,17 @@ def load_existing_nodes(output_dir: Path) -> list[ProxyNode]:
                 flow=item.get("flow", ""),
                 plugin=item.get("plugin"),
                 plugin_opts=item.get("plugin_opts"),
+                protocol=item.get("protocol"),
+                protocol_param=item.get("protocol_param"),
+                obfs_param=item.get("obfs_param"),
                 grpc_service_name=item.get("grpc_service_name"),
                 transport=item.get("transport", ""),
                 ws_path=item.get("ws_path", ""),
                 ws_host=item.get("ws_host", ""),
-                tls=item.get("tls", False),
+                tls=item.get(
+                    "tls",
+                    node_type in (ProxyType.TROJAN, ProxyType.HYSTERIA2, ProxyType.TUIC),
+                ),
                 skip_cert_verify=bool(item.get("skip_cert_verify", False)),
                 sni=item.get("sni", ""),
                 fingerprint=item.get("fingerprint", ""),
@@ -242,6 +267,7 @@ def load_existing_nodes(output_dir: Path) -> list[ProxyNode]:
                 down_speed=item.get("down_speed"),
                 congestion_control=item.get("congestion_control", ""),
                 udp_relay_mode=item.get("udp_relay_mode", ""),
+                mieru_transport=item.get("mieru_transport"),
                 latency_ms=item.get("latency_ms"),
                 is_alive=bool(item.get("is_alive", False)),
                 validation_error=item.get("validation_error"),
@@ -516,13 +542,15 @@ async def run_pipeline(
     alive_new = sum(1 for n in new_nodes if n.is_alive)
     logger.info(f"New nodes validation: {alive_new}/{len(new_nodes)} alive")
 
-    # 更新验证缓存（新节点）
-    now = time.time()
-    for n in validated_nodes:
-        validation_cache[(n.address, n.port, n.node_type.value)] = (
-            n.is_alive, n.latency_ms, now,
-        )
-    _save_validation_cache(output_dir, validation_cache)
+    # 更新验证缓存（新节点）。skip_validation 只是兜底输出，不能把未经验证
+    # 的节点写入缓存，否则后续正常运行会直接复用这些"假存活"结果。
+    if not skip_validation:
+        now = time.time()
+        for n in validated_nodes:
+            validation_cache[(n.address, n.port, n.node_type.value)] = (
+                n.is_alive, n.latency_ms, now,
+            )
+        _save_validation_cache(output_dir, validation_cache)
 
     # ── 5. Merge existing + new ────────────────────────────────────────────
 

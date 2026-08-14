@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fns.models import ProxyNode, ProxyType
+from fns.models import ProxyNode, ProxyType, normalize_address, normalize_transport
 from fns.parsers.base import BaseParser, ParseResult
 
 logger = logging.getLogger("fns")
@@ -15,10 +15,14 @@ _TYPE_MAP = {
     "vmess": ProxyType.VMESS,
     "shadowsocks": ProxyType.SS,
     "ss": ProxyType.SS,
+    "shadowsocksr": ProxyType.SSR,
+    "ssr": ProxyType.SSR,
     "trojan": ProxyType.TROJAN,
+    "hysteria": ProxyType.HYSTERIA,
     "hysteria2": ProxyType.HYSTERIA2,
-    "hysteria": ProxyType.HYSTERIA2,
     "tuic": ProxyType.TUIC,
+    "anytls": ProxyType.ANYTLS,
+    "mieru": ProxyType.MIERU,
     "http": ProxyType.HTTP,
     "socks": ProxyType.SOCKS5,
 }
@@ -79,14 +83,28 @@ class SingBoxParser(BaseParser):
         if node_type is None:
             return None
 
-        address = str(outbound.get("server", "") or outbound.get("address", ""))
+        address = normalize_address(
+            str(outbound.get("server", "") or outbound.get("address", ""))
+        )
         port = int(outbound.get("server_port") or outbound.get("port") or 0)
 
+        raw_transport = outbound.get("transport")
         tls = _as_dict(outbound.get("tls"))
-        tls_enabled = _as_bool(tls.get("enabled")) or outbound.get("tls") is True
+        tls_enabled = (
+            _as_bool(tls.get("enabled"))
+            or outbound.get("tls") is True
+            or node_type
+            in (
+                ProxyType.TROJAN,
+                ProxyType.HYSTERIA,
+                ProxyType.HYSTERIA2,
+                ProxyType.TUIC,
+                ProxyType.ANYTLS,
+            )
+        )
         utls = _as_dict(tls.get("utls"))
         reality = _as_dict(tls.get("reality"))
-        transport = _as_dict(outbound.get("transport"))
+        transport = _as_dict(raw_transport)
         headers = _as_dict(transport.get("headers"))
 
         return ProxyNode(
@@ -103,7 +121,7 @@ class SingBoxParser(BaseParser):
             method=outbound.get("method") or outbound.get("cipher") or "",
             encryption=outbound.get("security") or outbound.get("cipher") or "",
             flow=outbound.get("flow", ""),
-            transport=str(transport.get("type", "tcp")),
+            transport=normalize_transport(transport.get("type", "tcp")) or "tcp",
             ws_path=transport.get("path", ""),
             ws_host=headers.get("Host") or transport.get("host", ""),
             tls=tls_enabled,
@@ -117,12 +135,18 @@ class SingBoxParser(BaseParser):
                 or transport.get("serviceName")
                 or ""
             ),
+            protocol=outbound.get("protocol") or outbound.get("protocol_param") or "",
+            protocol_param=(
+                outbound.get("protocol_param") or outbound.get("protocol-param") or ""
+            ),
+            obfs_param=outbound.get("obfs_param") or outbound.get("obfs-param") or "",
             obfs=outbound.get("obfs", ""),
             obfs_password=outbound.get("obfs-password", ""),
             up_speed=outbound.get("up_mbps"),
             down_speed=outbound.get("down_mbps"),
             congestion_control=outbound.get("congestion_control", ""),
             udp_relay_mode=outbound.get("udp_relay_mode", ""),
+            mieru_transport=raw_transport if isinstance(raw_transport, str) else None,
             source=source,
             remark=str(outbound.get("tag") or outbound.get("name") or f"{address}:{port}"),
         )

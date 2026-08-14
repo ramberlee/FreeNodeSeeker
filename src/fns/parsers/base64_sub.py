@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 
-from fns.models import ProxyNode
+from fns.models import ProxyNode, normalize_address
 from fns.parsers.base import BaseParser, ParseResult
 from fns.parsers.proxy_uri import ProxyUriParser
 from fns.parsers.sip008 import Sip008Parser
@@ -19,7 +19,21 @@ from fns.utils.crypto import safe_b64decode
 
 logger = logging.getLogger("fns")
 
-URI_PREFIXES = ("vmess://", "vless://", "ss://", "trojan://", "hysteria2://", "hy2://", "tuic://")
+URI_PREFIXES = (
+    "vmess://",
+    "vless://",
+    "ss://",
+    "ssr://",
+    "trojan://",
+    "hysteria://",
+    "hysteria2://",
+    "hy2://",
+    "tuic://",
+    "anytls://",
+    "http://",
+    "socks5://",
+    "socks://",
+)
 
 
 class Base64SubParser(BaseParser):
@@ -131,7 +145,7 @@ class Base64SubParser(BaseParser):
 
         node = ProxyNode(
             node_type=ProxyType(proto),
-            address=data.get("add", data.get("address", "")),
+            address=normalize_address(data.get("add", data.get("address", ""))),
             port=int(data.get("port", 0)),
             uuid=data.get("id", data.get("uuid", "")),
             password=data.get("password", ""),
