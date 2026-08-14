@@ -235,13 +235,16 @@ Windows 可直接运行 `clash_auto_select.bat`，Git Bash / Linux / macOS 可�
 | `CLASH_PROXY` | `http://127.0.0.1:7897` | mixed 代理端口，用于带宽测速下载 |
 | `CLASH_GROUP` | `综合打分` | 要管理的顶层 select 分组名 |
 | `CLASH_DELAY_URL` | `https://cp.cloudflare.com/generate_204` | 延迟测试 URL |
-| `CLASH_TEST_URL` | `https://speed.cloudflare.com/__down?bytes=3000000` | 带宽测试下载 URL（约 3 MB） |
+| `CLASH_TEST_URL` | `https://speed.cloudflare.com/__down?bytes=1000000` | 带宽测试下载 URL（约 1 MB） |
 | `CLASH_TEST_TIMEOUT` | `40` | 单节点测速超时（秒） |
 | `CLASH_INTERVAL` | `300` | 自动选线间隔（秒），`<=0` 只跑一轮 |
-| `CLASH_LAT_THRESH` | `1500` | 延迟超过该值（ms）直接淘汰 |
-| `CLASH_DELAY_TIMEOUT` | `2000` | 单节点延迟测试超时（ms） |
+| `CLASH_LAT_THRESH` | `3000` | 延迟超过该值（ms）直接淘汰 |
+| `CLASH_DELAY_TIMEOUT` | `5000` | 单节点延迟测试超时（ms） |
 | `CLASH_W_LAT` | `5.0` | 延迟惩罚权重，每 1000 ms 扣对应 MB/s |
-| `CLASH_LAT_WORKERS` | `16` | 延迟测试并发线程数 |
+| `CLASH_MAX_WORKERS` | `100` | 延迟+带宽统一并行任务数（上限 100） |
+| `CLASH_MIHOMO_LIMIT` | `100` | 同时运行的独立 mihomo 实例上限，默认等于 `CLASH_MAX_WORKERS` |
+| `CLASH_NODE_CONFIG` | `output/fns.yaml` | 含完整节点参数的 Clash 配置，用于独立 mihomo 测速 |
+| `CLASH_MIHOMO` | 自动查找 | mihomo 可执行文件路径，优先使用 `bin/mihomo.exe` |
 | `CLASH_TOPK` | `0` | 只对延迟最低的前 N 个节点测带宽，`0` 为全部 |
 | `CLASH_LOG` | `logs/clash_auto_select.log` | 日志文件路径 |
 
