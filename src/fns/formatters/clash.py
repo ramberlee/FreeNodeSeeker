@@ -66,6 +66,8 @@ def node_to_clash_proxy(node: ProxyNode) -> dict:
                 "path": node.ws_path or "/",
                 "headers": {"Host": node.ws_host or node.address},
             }
+        if node.transport == "grpc" and node.grpc_service_name:
+            proxy["grpc-opts"] = {"grpc-service-name": node.grpc_service_name}
 
     elif node.node_type == ProxyType.VLESS:
         proxy["uuid"] = node.uuid or ""

@@ -36,7 +36,7 @@ validator:
   concurrency: 150
   timeout: 5.0
   retries: 1
-  test_url: "http://www.google.com/"
+  test_url: "https://www.gstatic.com/generate_204"
 
 # --- Output ---
 output:

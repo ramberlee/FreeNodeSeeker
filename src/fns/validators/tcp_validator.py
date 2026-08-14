@@ -91,6 +91,17 @@ async def _send_http_get(
     if parsed.query:
         path += "?" + parsed.query
 
+    if parsed.scheme == "https":
+        import ssl
+
+        # pproxy exposes the same TLS wrapper it uses for its own test_url.
+        from pproxy import proto
+
+        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        reader, writer = proto.sslwrap(reader, writer, ctx, False, host)
+
     req = (
         f"GET {path} HTTP/1.0\r\n"
         f"Host: {host}\r\n"
@@ -102,13 +113,13 @@ async def _send_http_get(
     writer.write(req.encode())
     await writer.drain()
     try:
-        data = await asyncio.wait_for(reader.read(4096), timeout=timeout)
-    except asyncio.TimeoutError:
+        status_line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+    except (asyncio.TimeoutError, TimeoutError):
         return False
-    if not data or len(data) < 12:
+    if not status_line:
         return False
     # Parse HTTP status line: "HTTP/1.x NNN ..."
-    parts = data[:32].split(b" ")
+    parts = status_line.split(b" ", 2)
     if len(parts) < 2:
         return False
     try:
@@ -230,16 +241,23 @@ async def _validate_via_mihomo(
         finally:
             try:
                 proc.terminate()
-            except ProcessLookupError:
+            except Exception:
                 pass
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
             except (ProcessLookupError, TimeoutError, asyncio.TimeoutError):
-                pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except Exception:
+                    pass
             except Exception:
                 try:
                     proc.kill()
-                except ProcessLookupError:
+                except Exception:
                     pass
             if proc.stderr is not None:
                 try:
@@ -248,9 +266,16 @@ async def _validate_via_mihomo(
                     )[-1000:]
                 except Exception:
                     pass
+    except Exception as e:
+        node.validation_error = f"mihomo_spawn_failed: {type(e).__name__}: {e}"
+        return False, None
     finally:
         if stderr_tail:
-            if node.validation_error in (None, "mihomo_request_failed"):
+            if node.validation_error in (
+                None,
+                "mihomo_request_failed",
+                "mihomo_startup_failed",
+            ):
                 node.validation_error = (
                     "mihomo_error: "
                     + stderr_tail[-200:].decode("utf-8", errors="replace")
@@ -363,7 +388,10 @@ class TcpValidator:
                 tasks = [_validate_one_count(node) for node in all_candidates]
                 await asyncio.gather(*tasks)
         finally:
-            await self._close_session()
+            try:
+                await self._close_session()
+            except Exception:
+                logger.debug("Failed to close shared aiohttp session", exc_info=True)
 
         alive = sum(1 for n in nodes if n.is_alive)
         logger.info(f"Validation done: {alive}/{len(nodes)} alive")
@@ -397,13 +425,29 @@ class TcpValidator:
         return [r for r in results if r is not None]
 
     async def validate_one(self, node: ProxyNode) -> ProxyNode:
-        return await self._validate_node(node)
+        try:
+            return await self._validate_with_sem(node)
+        finally:
+            try:
+                await self._close_session()
+            except Exception:
+                logger.debug("Failed to close shared aiohttp session", exc_info=True)
 
     # ── Internal dispatch ───────────────────────────────────────────────
 
     async def _validate_with_sem(self, node: ProxyNode) -> ProxyNode:
         async with self._semaphore:
-            return await self._validate_node(node)
+            try:
+                return await self._validate_node(node)
+            except Exception as e:
+                logger.warning(
+                    f"Unexpected validation error for {node.node_type.value}://"
+                    f"{node.address}:{node.port}: {type(e).__name__}: {e}"
+                )
+                node.is_alive = False
+                node.latency_ms = None
+                node.validation_error = f"validation_error: {type(e).__name__}: {e}"
+                return node
 
     async def _validate_node(self, node: ProxyNode) -> ProxyNode:
         # SS/Trojan get full protocol validation through mihomo when available;
@@ -479,6 +523,8 @@ class TcpValidator:
                 ) as resp:
                     if not _is_success_status(resp.status):
                         node.validation_error = f"http_status_{resp.status}"
+                        node.is_alive = False
+                        node.latency_ms = None
                         return node
                     await resp.read()
                 elapsed = (time.monotonic() - start) * 1000
@@ -510,7 +556,7 @@ class TcpValidator:
         from aiohttp_socks import ProxyConnector
         from aiohttp_socks import ProxyType as SocksProxyType
 
-        username = node.uuid or None
+        username = node.username or node.uuid or None
         password = node.password or None
         connector = ProxyConnector(
             proxy_type=SocksProxyType.SOCKS5,
@@ -534,6 +580,8 @@ class TcpValidator:
                     ) as resp:
                         if not _is_success_status(resp.status):
                             node.validation_error = f"socks5_status_{resp.status}"
+                            node.is_alive = False
+                            node.latency_ms = None
                             return node  # proxy returned error
                         await resp.read()
                     elapsed = (time.monotonic() - start) * 1000
@@ -566,11 +614,9 @@ class TcpValidator:
 
         method = node.method or "aes-256-gcm"
         password = node.password or ""
-        userinfo = (
-            base64.urlsafe_b64encode(f"{method}:{password}".encode())
-            .decode()
-            .rstrip("=")
-        )
+        # pproxy requires the base64 padding, otherwise short userinfo strings
+        # cannot be decoded back to "method:password".
+        userinfo = base64.b64encode(f"{method}:{password}".encode()).decode()
         ss_uri = f"ss://{userinfo}@{node.address}:{node.port}"
 
         target_host, target_port = _parse_host_port(self.test_url)
@@ -620,9 +666,9 @@ class TcpValidator:
         import pproxy
 
         password = node.password or ""
-        trojan_uri = f"trojan://{password}@{node.address}:{node.port}"
-        if node.sni:
-            trojan_uri += f"?sni={node.sni}"
+        # pproxy uses the URI fragment for the Trojan password and +ssl for TLS.
+        scheme = "trojan+ssl" if node.tls else "trojan"
+        trojan_uri = f"{scheme}://{node.address}:{node.port}#{password}"
 
         target_host, target_port = _parse_host_port(self.test_url)
 

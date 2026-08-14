@@ -45,7 +45,7 @@ class ValidatorConfig(BaseModel):
     concurrency: int = 50
     timeout: float = 5.0
     retries: int = 1
-    test_url: str = "http://www.google.com/"
+    test_url: str = "https://www.gstatic.com/generate_204"
 
     @field_validator("concurrency")
     @classmethod

@@ -315,7 +315,7 @@ validator:
   concurrency: 50        # 并发验证数，范围 1-200
   timeout: 5.0           # 单次验证超时（秒）
   retries: 1             # 失败重试次数
-  test_url: "http://www.google.com/"
+  test_url: "https://www.gstatic.com/generate_204"
 
 output:
   dir: ./output
@@ -361,7 +361,7 @@ logging:
 | `validator.concurrency` | int | `50` | 验证并发数，自动限制在 1-200 |
 | `validator.timeout` | float | `5.0` | 单次验证超时（秒） |
 | `validator.retries` | int | `1` | 失败重试次数 |
-| `validator.test_url` | str | `http://www.google.com/` | 验证时请求的目标 URL |
+| `validator.test_url` | str | `https://www.gstatic.com/generate_204` | 验证时请求的目标 URL |
 | `output.dir` | str | `./output` | 输出目录 |
 | `output.formats` | list | `["clash", "base64"]` | 支持 `clash` / `base64` / `json` |
 | `output.clash.allow_lan` | bool | `false` | 是否允许局域网访问 |

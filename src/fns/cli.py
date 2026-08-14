@@ -189,7 +189,10 @@ def check(
     port: int = typer.Argument(..., help="Port number"),
     timeout: float = typer.Option(5.0, "--timeout", "-t", help="Request timeout"),
     test_url: str = typer.Option(
-        "http://www.google.com/", "--url", "-u", help="URL to request through the proxy"
+        "https://www.gstatic.com/generate_204",
+        "--url",
+        "-u",
+        help="URL to request through the proxy",
     ),
     proxy_type: str = typer.Option(
         "http", "--type", "-T", help="Proxy protocol: http, socks5, ss, trojan, vmess, vless, hysteria2, tuic"

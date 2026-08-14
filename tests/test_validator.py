@@ -1,5 +1,7 @@
 """Test multi-protocol validator."""
 
+import asyncio
+import base64
 import json
 
 import aiohttp
@@ -11,6 +13,7 @@ from fns.validators.tcp_validator import (
     TcpValidator,
     _build_mihomo_config,
     _is_success_status,
+    _validate_via_mihomo,
     _write_mihomo_config,
 )
 
@@ -265,6 +268,383 @@ class TestTcpValidator:
         assert "🟠🟢 测试节点" in raw
         assert "\\u" not in raw
         assert json.loads(raw)["proxies"][0]["name"] == sample_vless_node.remark
+
+    def test_build_mihomo_config_vmess_grpc(self):
+        node = ProxyNode(
+            node_type=ProxyType.VMESS,
+            address="1.2.3.4",
+            port=443,
+            uuid="b831381d-6324-4d53-ad4f-8cda48b30811",
+            transport="grpc",
+            grpc_service_name="my-service",
+        )
+        config = _build_mihomo_config(node, 12345)
+        assert config["proxies"][0]["network"] == "grpc"
+        assert config["proxies"][0]["grpc-opts"] == {
+            "grpc-service-name": "my-service"
+        }
+
+    @pytest.mark.asyncio
+    async def test_non_2xx_http_clears_stale_alive_state(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1,
+            timeout=2.0,
+            retries=0,
+            test_url="https://www.gstatic.com/generate_204",
+        )
+        validator = TcpValidator(cfg)
+
+        class FakeResponse:
+            status = 403
+
+            async def read(self):
+                return b""
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        async def fake_get_session():
+            return FakeSession()
+
+        monkeypatch.setattr(validator, "_get_session", fake_get_session)
+
+        node = ProxyNode(node_type=ProxyType.HTTP, address="127.0.0.1", port=8080)
+        node.is_alive = True
+        node.latency_ms = 55.0
+        result = await validator.validate_one(node)
+        assert result.is_alive is False
+        assert result.latency_ms is None
+        assert result.validation_error == "http_status_403"
+
+    @pytest.mark.asyncio
+    async def test_socks5_uses_username_field(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1,
+            timeout=2.0,
+            retries=0,
+            test_url="https://www.gstatic.com/generate_204",
+        )
+        validator = TcpValidator(cfg)
+        captured = {}
+
+        class FakeConnector:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        class FakeResponse:
+            status = 200
+
+            async def read(self):
+                return b""
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        monkeypatch.setattr("aiohttp_socks.ProxyConnector", FakeConnector)
+        monkeypatch.setattr("aiohttp.ClientSession", FakeSession)
+
+        node = ProxyNode(
+            node_type=ProxyType.SOCKS5,
+            address="127.0.0.1",
+            port=1080,
+            username="alice",
+            password="secret",
+        )
+        result = await validator.validate_one(node)
+        assert result.is_alive is True
+        assert captured["username"] == "alice"
+        assert captured["password"] == "secret"
+
+    @pytest.mark.asyncio
+    async def test_non_2xx_socks5_clears_stale_alive_state(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1,
+            timeout=2.0,
+            retries=0,
+            test_url="https://www.gstatic.com/generate_204",
+        )
+        validator = TcpValidator(cfg)
+
+        class FakeResponse:
+            status = 407
+
+            async def read(self):
+                return b""
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        monkeypatch.setattr("aiohttp_socks.ProxyConnector", lambda **kwargs: None)
+        monkeypatch.setattr("aiohttp.ClientSession", FakeSession)
+
+        node = ProxyNode(
+            node_type=ProxyType.SOCKS5,
+            address="127.0.0.1",
+            port=1080,
+            username="alice",
+            password="secret",
+        )
+        node.is_alive = True
+        node.latency_ms = 55.0
+        result = await validator.validate_one(node)
+        assert result.is_alive is False
+        assert result.latency_ms is None
+        assert result.validation_error == "socks5_status_407"
+
+    @pytest.mark.asyncio
+    async def test_unexpected_validation_error_marks_node_dead(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1,
+            timeout=2.0,
+            retries=0,
+            test_url="https://www.gstatic.com/generate_204",
+        )
+        validator = TcpValidator(cfg)
+
+        async def boom(node):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(validator, "_validate_node", boom)
+
+        node = ProxyNode(node_type=ProxyType.HTTP, address="192.0.2.1", port=9999)
+        result = await validator.validate_one(node)
+        assert result.is_alive is False
+        assert result.latency_ms is None
+        assert "boom" in result.validation_error
+
+    @pytest.mark.asyncio
+    async def test_ss_uri_uses_standard_base64(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1,
+            timeout=2.0,
+            retries=0,
+            test_url="https://www.gstatic.com/generate_204",
+        )
+        validator = TcpValidator(cfg)
+        seen = []
+
+        class FakeWriter:
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        class FakeConnection:
+            def __init__(self, uri):
+                seen.append(uri)
+
+            async def tcp_connect(self, host, port):
+                return None, FakeWriter()
+
+        async def ok_http(reader, writer, test_url, timeout):
+            return True
+
+        monkeypatch.setattr("pproxy.Connection", FakeConnection)
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._find_mihomo", lambda: None
+        )
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._send_http_get", ok_http
+        )
+
+        password = "p@ssw0rd+/-"
+        node = ProxyNode(
+            node_type=ProxyType.SS,
+            address="1.2.3.4",
+            port=8388,
+            method="aes-256-gcm",
+            password=password,
+        )
+        result = await validator.validate_one(node)
+        assert result.is_alive is True
+        expected = base64.b64encode(f"aes-256-gcm:{password}".encode()).decode()
+        assert seen[0] == f"ss://{expected}@1.2.3.4:8388"
+
+    @pytest.mark.asyncio
+    async def test_trojan_uri_uses_pproxy_fragment_format(self, monkeypatch):
+        cfg = ValidatorConfig(
+            concurrency=1,
+            timeout=2.0,
+            retries=0,
+            test_url="https://www.gstatic.com/generate_204",
+        )
+        validator = TcpValidator(cfg)
+        seen = []
+
+        class FakeWriter:
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        class FakeConnection:
+            def __init__(self, uri):
+                seen.append(uri)
+
+            async def tcp_connect(self, host, port):
+                return None, FakeWriter()
+
+        async def ok_http(reader, writer, test_url, timeout):
+            return True
+
+        monkeypatch.setattr("pproxy.Connection", FakeConnection)
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._find_mihomo", lambda: None
+        )
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._send_http_get", ok_http
+        )
+
+        node = ProxyNode(
+            node_type=ProxyType.TROJAN,
+            address="trojan.example.com",
+            port=443,
+            password="p@ss/word",
+            tls=True,
+        )
+        result = await validator.validate_one(node)
+        assert result.is_alive is True
+        assert seen[0] == "trojan+ssl://trojan.example.com:443#p@ss/word"
+
+    @pytest.mark.asyncio
+    async def test_mihomo_kills_process_on_wait_timeout(self, monkeypatch):
+        class FakeResponse:
+            status = 200
+
+            async def read(self):
+                return b""
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            closed = False
+
+            def get(self, *args, **kwargs):
+                return FakeResponse()
+
+        class FakeProc:
+            def __init__(self):
+                self.stderr = None
+                self.terminated = False
+                self.killed = False
+                self.wait_calls = 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                self.killed = True
+
+            async def wait(self):
+                self.wait_calls += 1
+                if self.wait_calls == 1:
+                    raise asyncio.TimeoutError
+                return 0
+
+        proc = FakeProc()
+
+        async def fake_wait_for_port(port, timeout):
+            return True
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            return proc
+
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._find_mihomo", lambda: "mihomo.exe"
+        )
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._free_port", lambda: 12345
+        )
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._wait_for_port", fake_wait_for_port
+        )
+        monkeypatch.setattr(
+            "asyncio.create_subprocess_exec", fake_create_subprocess_exec
+        )
+
+        node = ProxyNode(
+            node_type=ProxyType.VLESS,
+            address="1.2.3.4",
+            port=443,
+            uuid="b831381d-6324-4d53-ad4f-8cda48b30811",
+        )
+        ok, _ = await _validate_via_mihomo(
+            node,
+            "https://www.gstatic.com/generate_204",
+            2.0,
+            session=FakeSession(),
+        )
+        assert ok is True
+        assert proc.killed is True
+
+    @pytest.mark.asyncio
+    async def test_mihomo_spawn_failure_returns_false(self, monkeypatch):
+        def fail_write(config, config_path):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._find_mihomo", lambda: "mihomo.exe"
+        )
+        monkeypatch.setattr(
+            "fns.validators.tcp_validator._write_mihomo_config", fail_write
+        )
+
+        node = ProxyNode(
+            node_type=ProxyType.VLESS,
+            address="1.2.3.4",
+            port=443,
+            uuid="b831381d-6324-4d53-ad4f-8cda48b30811",
+        )
+        ok, _ = await _validate_via_mihomo(
+            node, "https://www.gstatic.com/generate_204", 2.0
+        )
+        assert ok is False
+        assert "mihomo_spawn_failed" in node.validation_error
 
     @pytest.mark.asyncio
     async def test_validate_all(self):
